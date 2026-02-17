@@ -13,8 +13,8 @@ pub async fn run(mut ws: WsStream, tx: mpsc::Sender<Measurement>) -> Result<()> 
 
     // timeout returns Ok(inner_result) or Err(Elapsed)
     match result {
-        Ok(inner) => inner, // propagate any WebSocket error
-        Err(_elapsed) => Ok(()),       // timeout is normal completion
+        Ok(inner) => inner,      // propagate any WebSocket error
+        Err(_elapsed) => Ok(()), // timeout is normal completion
     }
 }
 

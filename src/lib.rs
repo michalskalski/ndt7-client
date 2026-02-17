@@ -4,3 +4,4 @@ pub mod error;
 pub mod locate;
 pub mod params;
 pub mod spec;
+pub mod upload;

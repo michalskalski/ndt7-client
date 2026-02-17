@@ -549,6 +549,7 @@ name = "ndt7-client"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "rand",
  "reqwest",
  "rustls",
  "serde",

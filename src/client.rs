@@ -6,10 +6,11 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{Connector, MaybeTlsStream, connect_async_tls_with_config};
 use url::Url;
 
-use crate::error::{Ndt7Error, Result};
-use crate::{locate, params};
-use crate::spec::Measurement;
 use crate::download;
+use crate::upload;
+use crate::error::{Ndt7Error, Result};
+use crate::spec::Measurement;
+use crate::{locate, params};
 
 /// Type alias for the WebSocket stream
 pub type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -48,16 +49,15 @@ impl Client {
         );
 
         // Connect using rustls for TLS.
-        let root_store = rustls::RootCertStore::from_iter(
-            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-        );
-        let tls_config = rustls::ClientConfig::builder_with_provider(
-                Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
-            )
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+        let root_store =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
 
         let connector = Connector::Rustls(Arc::new(tls_config));
         let (ws_stream, _response) =
@@ -72,7 +72,9 @@ impl Client {
         let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
 
         // find the download url
-        let url = target.urls.into_iter()
+        let url = target
+            .urls
+            .into_iter()
             .find(|(key, _)| key.contains(params::DOWNLOAD_URL_PATH))
             .map(|(_, url)| url)
             .ok_or(Ndt7Error::NoTargets)?;
@@ -88,10 +90,39 @@ impl Client {
         Ok(rx)
     }
 
-    fn user_agent(&self) -> String {
-        format!("{}/{} {}/{}", &self.client_name, &self.client_version, env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+    pub async fn start_upload(&self) -> Result<mpsc::Receiver<Measurement>> {
+        // discover server
+        let targets = locate::nearest(&self.user_agent()).await?;
+        let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
+
+        // find the upload url
+        let url = target
+            .urls
+            .into_iter()
+            .find(|(key, _)| key.contains(params::UPLOAD_URL_PATH))
+            .map(|(_, url)| url)
+            .ok_or(Ndt7Error::NoTargets)?;
+
+        // connect
+        let ws = self.connect(&url).await?;
+
+        // spawn upload task, return receiver
+        let (tx, rx) = mpsc::channel(64);
+        tokio::spawn(async move {
+            let _ = upload::run(ws, tx).await;
+        });
+        Ok(rx)
     }
 
+    fn user_agent(&self) -> String {
+        format!(
+            "{}/{} {}/{}",
+            &self.client_name,
+            &self.client_version,
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        )
+    }
 }
 
 #[cfg(test)]
@@ -103,6 +134,20 @@ mod tests {
     async fn test_download_real_server() {
         let client = Client::new("ndt7-client-rust".into(), "0.1.0".into());
         let mut rx = client.start_download().await.unwrap();
+
+        let mut count = 0;
+        while let Some(m) = rx.recv().await {
+            count += 1;
+            println!("{:?}", m);
+        }
+        assert!(count > 0);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_upload_real_server() {
+        let client = Client::new("ndt7-client-rust".into(), "0.1.0".into());
+        let mut rx = client.start_upload().await.unwrap();
 
         let mut count = 0;
         while let Some(m) = rx.recv().await {
