@@ -14,6 +14,8 @@ pub enum Ndt7Error {
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("bad service URL: {0}")]
     ServiceUnsupported(#[from] url::ParseError),
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Ndt7Error>;

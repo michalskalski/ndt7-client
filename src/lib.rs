@@ -1,7 +1,9 @@
 pub mod client;
 pub mod download;
+pub mod emitter;
 pub mod error;
 pub mod locate;
 pub mod params;
 pub mod spec;
+pub mod summary;
 pub mod upload;

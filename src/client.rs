@@ -7,9 +7,9 @@ use tokio_tungstenite::{Connector, MaybeTlsStream, connect_async_tls_with_config
 use url::Url;
 
 use crate::download;
-use crate::upload;
 use crate::error::{Ndt7Error, Result};
 use crate::spec::Measurement;
+use crate::upload;
 use crate::{locate, params};
 
 /// Type alias for the WebSocket stream
