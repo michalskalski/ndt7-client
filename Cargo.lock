@@ -656,6 +656,7 @@ dependencies = [
 name = "ndt7-client"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "clap",
  "futures-util",
  "rand",

@@ -100,7 +100,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let mut dl_measurement: Option<Measurement> = None;
+    let mut dl_client_measurement: Option<Measurement> = None;
+    let mut dl_server_measurement: Option<Measurement> = None;
     let mut ul_measurement: Option<Measurement> = None;
 
     if let Some(ref url) = dl_url {
@@ -112,8 +113,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !cli.quiet {
                 emitter.on_download_event(&m)?;
             }
-            if m.origin == Some(Origin::Server) {
-                dl_measurement = Some(m);
+            match m.origin {
+                Some(Origin::Client) => dl_client_measurement = Some(m),
+                Some(Origin::Server) => dl_server_measurement = Some(m),
+                None => {}
             }
         }
         emitter.on_complete(t)?;
@@ -137,7 +140,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let summary = Summary::from_measurements(
         server_fqdn,
-        dl_measurement.as_ref(),
+        dl_client_measurement.as_ref(),
+        dl_server_measurement.as_ref(),
         ul_measurement.as_ref(),
     );
 

@@ -1,7 +1,8 @@
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use rand::RngCore;
 use rand::SeedableRng;
-use rand::rngs::StdRng;
+use rand::rngs::SmallRng;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 use tokio_tungstenite::tungstenite::Message;
@@ -51,20 +52,22 @@ async fn upload_loop(
     let mut prev_update = start;
     let mut total_bytes: i64 = 0;
 
-    let mut rng = StdRng::from_os_rng();
+    let mut rng = SmallRng::from_os_rng();
     let mut msg_size = params::INITIAL_MESSAGE_SIZE;
     let mut buf = vec![0u8; msg_size];
     rng.fill_bytes(&mut buf);
+    let mut payload = Bytes::from(buf);
 
     loop {
-        sink.send(Message::Binary(buf.clone().into())).await?;
-        total_bytes += buf.len() as i64;
+        sink.send(Message::Binary(payload.clone())).await?;
+        total_bytes += payload.len() as i64;
         if msg_size < params::MAX_MESSAGE_SIZE
             && msg_size <= total_bytes as usize / params::SCALING_FRACTION
         {
             msg_size *= 2;
-            buf = vec![0u8; msg_size];
-            rng.fill_bytes(&mut buf);
+            let mut new_buf = vec![0u8; msg_size];
+            rng.fill_bytes(&mut new_buf);
+            payload = Bytes::from(new_buf);
         }
         if prev_update.elapsed() >= params::UPDATE_INTERVAL {
             prev_update = Instant::now();
