@@ -12,19 +12,63 @@ use crate::spec::Measurement;
 use crate::upload;
 use crate::{locate, params};
 
+/// A certificate verifier that accepts any certificate.
+/// Used with --no-verify for testing against servers with self-signed certs.
+#[derive(Debug)]
+struct NoVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for NoVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 /// Type alias for the WebSocket stream
 pub type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub struct Client {
     pub client_name: String,
     pub client_version: String,
+    pub no_verify_tls: bool,
 }
 
 impl Client {
-    pub fn new(client_name: String, client_version: String) -> Self {
+    pub fn new(client_name: String, client_version: String, no_verify_tls: bool) -> Self {
         Client {
             client_name,
             client_version,
+            no_verify_tls
         }
     }
 
@@ -49,15 +93,24 @@ impl Client {
         );
 
         // Connect using rustls for TLS.
-        let root_store =
-            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::aws_lc_rs::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let tls_config = if self.no_verify_tls {
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoVerifier))
+                .with_no_client_auth()
+        } else {
+            let root_store = rustls::RootCertStore::from_iter(
+                webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+            );
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(root_store)
+                .with_no_client_auth()
+        };
 
         let connector = Connector::Rustls(Arc::new(tls_config));
         let (ws_stream, _response) =
@@ -136,7 +189,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_download_real_server() {
-        let client = Client::new("ndt7-client-rust".into(), "0.1.0".into());
+        let client = Client::new("ndt7-client-rust".into(), env!("CARGO_PKG_VERSION").into(), false);
         let locate = client.locate_test_targets().await.unwrap();
         let mut rx = client
             .start_download(&locate.download_url.unwrap())
@@ -155,7 +208,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_upload_real_server() {
-        let client = Client::new("ndt7-client-rust".into(), "0.1.0".into());
+        let client = Client::new("ndt7-client-rust".into(), env!("CARGO_PKG_VERSION").into(), false);
         let locate = client.locate_test_targets().await.unwrap();
         let mut rx = client
             .start_upload(&locate.upload_url.unwrap())

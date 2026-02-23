@@ -35,6 +35,9 @@ struct Cli {
     /// Emit summary and errors only
     #[arg(long)]
     quiet: bool,
+    /// Skip tls certificate verification
+    #[arg(long)]
+    no_verify: bool,
 }
 
 struct Targets {
@@ -97,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Format::Json => Box::new(JsonEmitter::new(std::io::stdout())),
     };
 
-    let client = Client::new("ndt7-client-rs".into(), env!("CARGO_PKG_VERSION").into());
+    let client = Client::new("ndt7-client-rs".into(), env!("CARGO_PKG_VERSION").into(), cli.no_verify);
     let targets = resolve_targets(&cli, &client).await?;
 
     if targets.download_url.is_none() && targets.upload_url.is_none() {
