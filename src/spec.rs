@@ -30,6 +30,8 @@ pub struct ConnectionInfo {
     pub server: String,
     #[serde(rename = "UUID", skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
+    #[serde(rename = "StartTime", skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +147,7 @@ mod tests {
                 client: "10.0.0.1:12345".into(),
                 server: "10.0.0.2:443".into(),
                 uuid: Some("test-uuid".into()),
+                start_time: Some("2026-02-23T13:05:00.000000000Z".into()),
             }),
             origin: Some(Origin::Server),
             test: Some(TestKind::Upload),

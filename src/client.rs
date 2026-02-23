@@ -66,7 +66,7 @@ impl Client {
         Ok(ws_stream)
     }
 
-    pub async fn start_download(&self) -> Result<mpsc::Receiver<Measurement>> {
+    pub async fn start_download(&self) -> Result<(String, mpsc::Receiver<Measurement>)> {
         // discover server
         let targets = locate::nearest(&self.user_agent()).await?;
         let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
@@ -87,10 +87,10 @@ impl Client {
         tokio::spawn(async move {
             let _ = download::run(ws, tx).await;
         });
-        Ok(rx)
+        Ok((target.machine, rx))
     }
 
-    pub async fn start_upload(&self) -> Result<mpsc::Receiver<Measurement>> {
+    pub async fn start_upload(&self) -> Result<(String, mpsc::Receiver<Measurement>)> {
         // discover server
         let targets = locate::nearest(&self.user_agent()).await?;
         let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
@@ -111,7 +111,7 @@ impl Client {
         tokio::spawn(async move {
             let _ = upload::run(ws, tx).await;
         });
-        Ok(rx)
+        Ok((target.machine, rx))
     }
 
     fn user_agent(&self) -> String {
@@ -133,9 +133,10 @@ mod tests {
     #[ignore]
     async fn test_download_real_server() {
         let client = Client::new("ndt7-client-rust".into(), "0.1.0".into());
-        let mut rx = client.start_download().await.unwrap();
+        let (fqdn, mut rx) = client.start_download().await.unwrap();
 
         let mut count = 0;
+        println!("connected to {fqdn}");
         while let Some(m) = rx.recv().await {
             count += 1;
             println!("{:?}", m);
@@ -147,9 +148,10 @@ mod tests {
     #[ignore]
     async fn test_upload_real_server() {
         let client = Client::new("ndt7-client-rust".into(), "0.1.0".into());
-        let mut rx = client.start_upload().await.unwrap();
+        let (fqdn, mut rx) = client.start_upload().await.unwrap();
 
         let mut count = 0;
+        println!("connected to {fqdn}");
         while let Some(m) = rx.recv().await {
             count += 1;
             println!("{:?}", m);

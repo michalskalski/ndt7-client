@@ -3,7 +3,7 @@ use std::io::Write;
 use serde::Serialize;
 
 use crate::error::Result;
-use crate::spec::{Measurement, TestKind};
+use crate::spec::{Measurement, Origin, TestKind};
 use crate::summary::Summary;
 
 #[derive(Serialize)]
@@ -59,39 +59,44 @@ impl<W: Write> Emitter for HumanReadableEmitter<W> {
     }
 
     fn on_connected(&mut self, test: TestKind, fqdn: &str) -> Result<()> {
-        write!(self.out, "{:?} in progress with {fqdn}", test)?;
+        write!(self.out, "\r{:?} in progress with {fqdn}\n", test)?;
         Ok(())
     }
 
     fn on_error(&mut self, test: TestKind, err: &str) -> Result<()> {
-        write!(self.out, "{:?} test failed: {err}", test)?;
+        write!(self.out, "\n{:?} test failed: {err}\n", test)?;
         Ok(())
     }
 
     fn on_complete(&mut self, test: TestKind) -> Result<()> {
-        write!(self.out, "{:?}: complete", test)?;
+        write!(self.out, "\n{:?}: complete\n", test)?;
         Ok(())
     }
 
     fn on_download_event(&mut self, m: &Measurement) -> Result<()> {
-        if let Some(app) = &m.app_info {
-            if app.elapsed_time > 0 {
-                let speed = 8.0 * app.num_bytes as f64 / app.elapsed_time as f64;
-                write!(self.out, "\rAvg. speed: {:>7.1} Mbit/s", speed)?;
-            }
+        if m.origin == Some(Origin::Client)
+            && let Some(app) = &m.app_info
+            && app.elapsed_time > 0
+        {
+            let speed = 8.0 * app.num_bytes as f64 / app.elapsed_time as f64;
+            write!(self.out, "\rAvg. speed: {:>7.1} Mbit/s", speed)?;
+            self.out.flush()?;
         }
+
         Ok(())
     }
 
     fn on_upload_event(&mut self, m: &Measurement) -> Result<()> {
-        if let Some(tcp) = &m.tcp_info {
-            if let (Some(received), Some(elapsed)) = (tcp.bytes_received, tcp.elapsed_time) {
-                if elapsed > 0 {
-                    let speed = 8.0 * received as f64 / elapsed as f64;
-                    write!(self.out, "\rAvg. speed: {:>7.1} Mbit/s", speed)?;
-                }
-            }
+        if m.origin == Some(Origin::Server)
+            && let Some(tcp) = &m.tcp_info
+            && let (Some(received), Some(elapsed)) = (tcp.bytes_received, tcp.elapsed_time)
+            && elapsed > 0
+        {
+            let speed = 8.0 * received as f64 / elapsed as f64;
+            write!(self.out, "\rAvg. speed: {:>7.1} Mbit/s", speed)?;
+            self.out.flush()?;
         }
+
         Ok(())
     }
 
@@ -197,6 +202,7 @@ mod tests {
                 num_bytes: 1_000_000,
                 elapsed_time: 1_000_000,
             }),
+            origin: Some(Origin::Client),
             ..Default::default()
         };
 
@@ -221,5 +227,4 @@ mod tests {
         assert_eq!(res["test"], "upload");
         assert_eq!(res["type"], "Starting");
     }
-
 }
