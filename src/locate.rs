@@ -17,7 +17,7 @@ pub struct LocateResponse {
 
 pub async fn nearest(user_agent: &str) -> Result<Vec<Target>> {
     let client = reqwest::Client::builder().user_agent(user_agent).build()?;
-    let response: LocateResponse = client.get(LOCATE_URL).send().await?.json().await?;
+    let response: LocateResponse = client.get(LOCATE_URL).send().await?.error_for_status()?.json().await?;
     Ok(response.results)
 }
 

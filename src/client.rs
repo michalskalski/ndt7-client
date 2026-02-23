@@ -66,52 +66,50 @@ impl Client {
         Ok(ws_stream)
     }
 
-    pub async fn start_download(&self) -> Result<(String, mpsc::Receiver<Measurement>)> {
-        // discover server
+    pub async fn locate_test_targets(&self) -> Result<LocateResult> {
         let targets = locate::nearest(&self.user_agent()).await?;
         let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
 
-        // find the download url
-        let url = target
-            .urls
-            .into_iter()
-            .find(|(key, _)| key.contains(params::DOWNLOAD_URL_PATH))
-            .map(|(_, url)| url)
-            .ok_or(Ndt7Error::NoTargets)?;
+        let mut dl_url: Option<String> = None;
+        let mut ul_url: Option<String> = None;
 
+        for (key, url) in target.urls {
+            if key.contains(params::DOWNLOAD_URL_PATH) {
+                dl_url = Some(url);
+            } else if key.contains(params::UPLOAD_URL_PATH) {
+                ul_url = Some(url);
+            }
+        }
+
+        Ok(LocateResult {
+            server_fqdn: target.machine,
+            download_url: dl_url,
+            upload_url: ul_url,
+        })
+    }
+
+    pub async fn start_download(&self, url: &str) -> Result<mpsc::Receiver<Measurement>> {
         // connect
-        let ws = self.connect(&url).await?;
+        let ws = self.connect(url).await?;
 
         // spawn download task, return receiver
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
             let _ = download::run(ws, tx).await;
         });
-        Ok((target.machine, rx))
+        Ok(rx)
     }
 
-    pub async fn start_upload(&self) -> Result<(String, mpsc::Receiver<Measurement>)> {
-        // discover server
-        let targets = locate::nearest(&self.user_agent()).await?;
-        let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
-
-        // find the upload url
-        let url = target
-            .urls
-            .into_iter()
-            .find(|(key, _)| key.contains(params::UPLOAD_URL_PATH))
-            .map(|(_, url)| url)
-            .ok_or(Ndt7Error::NoTargets)?;
-
+    pub async fn start_upload(&self, url: &str) -> Result<mpsc::Receiver<Measurement>> {
         // connect
-        let ws = self.connect(&url).await?;
+        let ws = self.connect(url).await?;
 
         // spawn upload task, return receiver
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
             let _ = upload::run(ws, tx).await;
         });
-        Ok((target.machine, rx))
+        Ok(rx)
     }
 
     fn user_agent(&self) -> String {
@@ -125,6 +123,12 @@ impl Client {
     }
 }
 
+pub struct LocateResult {
+    pub server_fqdn: String,
+    pub download_url: Option<String>,
+    pub upload_url: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,10 +137,14 @@ mod tests {
     #[ignore]
     async fn test_download_real_server() {
         let client = Client::new("ndt7-client-rust".into(), "0.1.0".into());
-        let (fqdn, mut rx) = client.start_download().await.unwrap();
+        let locate = client.locate_test_targets().await.unwrap();
+        let mut rx = client
+            .start_download(&locate.download_url.unwrap())
+            .await
+            .unwrap();
 
         let mut count = 0;
-        println!("connected to {fqdn}");
+        println!("connected to {}", locate.server_fqdn);
         while let Some(m) = rx.recv().await {
             count += 1;
             println!("{:?}", m);
@@ -148,10 +156,14 @@ mod tests {
     #[ignore]
     async fn test_upload_real_server() {
         let client = Client::new("ndt7-client-rust".into(), "0.1.0".into());
-        let (fqdn, mut rx) = client.start_upload().await.unwrap();
+        let locate = client.locate_test_targets().await.unwrap();
+        let mut rx = client
+            .start_upload(&locate.upload_url.unwrap())
+            .await
+            .unwrap();
 
         let mut count = 0;
-        println!("connected to {fqdn}");
+        println!("connected to {}", locate.server_fqdn);
         while let Some(m) = rx.recv().await {
             count += 1;
             println!("{:?}", m);
