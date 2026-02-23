@@ -13,7 +13,9 @@ pub enum Ndt7Error {
     #[error("websocket error: {0}")]
     WebSocket(Box<tokio_tungstenite::tungstenite::Error>),
     #[error("bad service URL: {0}")]
-    ServiceUnsupported(#[from] url::ParseError),
+    ServiceUnsupported(String),
+    #[error("URL parse error: {0}")]
+    UrlParse(#[from] url::ParseError),
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
 }

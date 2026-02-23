@@ -37,6 +37,57 @@ struct Cli {
     quiet: bool,
 }
 
+struct Targets {
+    server_fqdn: String,
+    download_url: Option<String>,
+    upload_url: Option<String>,
+}
+
+async fn resolve_targets(
+    cli: &Cli,
+    client: &Client,
+) -> Result<Targets, Box<dyn std::error::Error>> {
+    let scheme = if cli.no_tls { "ws" } else { "wss" };
+
+    if let Some(ref s) = cli.service_url {
+        let parsed = url::Url::parse(s)?;
+        let fqdn = parsed.host_str().ok_or(Ndt7Error::NoTargets)?.to_string();
+        match parsed.path() {
+            p if p.contains(params::DOWNLOAD_URL_PATH) => Ok(Targets {
+                server_fqdn: fqdn,
+                download_url: Some(s.clone()),
+                upload_url: None,
+            }),
+            p if p.contains(params::UPLOAD_URL_PATH) => Ok(Targets {
+                server_fqdn: fqdn,
+                download_url: None,
+                upload_url: Some(s.clone()),
+            }),
+            _ => Err(Ndt7Error::ServiceUnsupported(format!(
+                "path must contain {} or {}",
+                params::DOWNLOAD_URL_PATH,
+                params::UPLOAD_URL_PATH
+            ))
+            .into()),
+        }
+    } else if let Some(ref server) = cli.server {
+        Ok(Targets {
+            server_fqdn: server.clone(),
+            download_url: Some(format!("{scheme}://{server}{}", params::DOWNLOAD_URL_PATH))
+                .filter(|_| !cli.no_download),
+            upload_url: Some(format!("{scheme}://{server}{}", params::UPLOAD_URL_PATH))
+                .filter(|_| !cli.no_upload),
+        })
+    } else {
+        let locate = client.locate_test_targets().await?;
+        Ok(Targets {
+            server_fqdn: locate.server_fqdn,
+            download_url: locate.download_url.filter(|_| !cli.no_download),
+            upload_url: locate.upload_url.filter(|_| !cli.no_upload),
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -47,55 +98,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let client = Client::new("ndt7-client-rs".into(), env!("CARGO_PKG_VERSION").into());
+    let targets = resolve_targets(&cli, &client).await?;
 
-    let scheme = if cli.no_tls { "ws" } else { "wss" };
-
-    let (server_fqdn, dl_url, ul_url) = if let Some(ref s) = cli.service_url {
-        // user passed directly service url dictating what test to run
-        let parsed = url::Url::parse(s)?;
-        let fqdn = parsed.host_str().ok_or(Ndt7Error::NoTargets)?.to_string();
-        match parsed.path() {
-            p if p.contains(params::DOWNLOAD_URL_PATH) => (fqdn, Some(s.clone()), None),
-            p if p.contains(params::UPLOAD_URL_PATH) => (fqdn, None, Some(s.clone())),
-            _ => {
-                eprintln!(
-                    "error: service URL must contain {} or {}",
-                    params::DOWNLOAD_URL_PATH,
-                    params::UPLOAD_URL_PATH
-                );
-                std::process::exit(1);
-            }
-        }
-    } else if let Some(ref server) = cli.server {
-        // construct URLs from server hostname, bypass locate API
-        let dl = if cli.no_download {
-            None
-        } else {
-            Some(format!("{scheme}://{server}{}", params::DOWNLOAD_URL_PATH))
-        };
-        let ul = if cli.no_upload {
-            None
-        } else {
-            Some(format!("{scheme}://{server}{}", params::UPLOAD_URL_PATH))
-        };
-        (server.clone(), dl, ul)
-    } else {
-        // discover service urls, filter based on user choices
-        let locate = client.locate_test_targets().await?;
-        let dl = if cli.no_download {
-            None
-        } else {
-            locate.download_url
-        };
-        let ul = if cli.no_upload {
-            None
-        } else {
-            locate.upload_url
-        };
-        (locate.server_fqdn, dl, ul)
-    };
-
-    if dl_url.is_none() && ul_url.is_none() {
+    if targets.download_url.is_none() && targets.upload_url.is_none() {
         eprintln!("error: nothing to do");
         std::process::exit(1);
     }
@@ -104,11 +109,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dl_server_measurement: Option<Measurement> = None;
     let mut ul_measurement: Option<Measurement> = None;
 
-    if let Some(ref url) = dl_url {
+    if let Some(ref url) = targets.download_url {
         let t = TestKind::Download;
         emitter.on_starting(t)?;
         let mut rx = client.start_download(url).await?;
-        emitter.on_connected(t, &server_fqdn)?;
+        emitter.on_connected(t, &targets.server_fqdn)?;
         while let Some(m) = rx.recv().await {
             if !cli.quiet {
                 emitter.on_download_event(&m)?;
@@ -122,11 +127,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         emitter.on_complete(t)?;
     }
 
-    if let Some(ref url) = ul_url {
+    if let Some(ref url) = targets.upload_url {
         let t = TestKind::Upload;
         emitter.on_starting(t)?;
         let mut rx = client.start_upload(url).await?;
-        emitter.on_connected(t, &server_fqdn)?;
+        emitter.on_connected(t, &targets.server_fqdn)?;
         while let Some(m) = rx.recv().await {
             if !cli.quiet {
                 emitter.on_upload_event(&m)?;
@@ -139,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let summary = Summary::from_measurements(
-        server_fqdn,
+        targets.server_fqdn,
         dl_client_measurement.as_ref(),
         dl_server_measurement.as_ref(),
         ul_measurement.as_ref(),
