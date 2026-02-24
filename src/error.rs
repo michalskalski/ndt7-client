@@ -11,6 +11,9 @@ pub enum Ndt7Error {
     /// The Locate API returned no test targets.
     #[error("no targets available")]
     NoTargets,
+    /// The Locate API returned 204: M-Lab is out of capacity.
+    #[error("server at capacity; try again later")]
+    NoCapacity,
     /// JSON serialization or deserialization failed.
     #[error("serialize/deserialize error: {0}")]
     JsonError(#[from] serde_json::Error),
