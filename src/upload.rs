@@ -1,3 +1,8 @@
+//! ndt7 upload test implementation.
+//!
+//! Sends random binary WebSocket messages to the server while reading
+//! server counter-flow measurements, until [`params::UPLOAD_TIMEOUT`] elapses.
+
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
 use rand::RngCore;
@@ -12,6 +17,10 @@ use crate::error::Result;
 use crate::params;
 use crate::spec::{AppInfo, Measurement, Origin, TestKind};
 
+/// Run the upload test on an established WebSocket connection.
+///
+/// Measurements are sent on `tx` as they arrive. The function returns when
+/// the timeout expires or the server closes the connection.
 pub async fn run(ws: WsStream, tx: mpsc::Sender<Measurement>) -> Result<()> {
     let (sink, stream) = ws.split();
 

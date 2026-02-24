@@ -2,6 +2,15 @@
 name = "ndt7-client"
 version = "0.1.0"
 edition = "2024"
+description = "An ndt7 speed test client library and CLI"
+license = "Apache-2.0"
+repository = "https://github.com/michalskalski/ndt7-client"
+keywords = ["ndt7", "speedtest", "network", "bandwidth"]
+categories = ["network-programming"]
+
+[[bin]]
+name = "ndt7-client"
+path = "src/bin/ndt7_client.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

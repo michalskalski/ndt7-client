@@ -1,3 +1,5 @@
+//! High-level ndt7 test client.
+
 use std::sync::Arc;
 
 use tokio::net::TcpStream;
@@ -54,24 +56,60 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
     }
 }
 
-/// Type alias for the WebSocket stream
+/// Type alias for the WebSocket stream used by download and upload tests.
 pub type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// An ndt7 test client.
+///
+/// Use [`ClientBuilder`] to create a client, then [`Client::locate_test_targets`]
+/// to find a nearby M-Lab server, and [`Client::start_download`] /
+/// [`Client::start_upload`] to run tests.
 pub struct Client {
-    pub client_name: String,
-    pub client_version: String,
-    pub no_verify_tls: bool,
+    client_name: String,
+    client_version: String,
+    no_verify_tls: bool,
 }
 
-impl Client {
-    pub fn new(client_name: String, client_version: String, no_verify_tls: bool) -> Self {
-        Client {
-            client_name,
-            client_version,
-            no_verify_tls
+/// Builder for [`Client`].
+///
+/// ```
+/// # use ndt7_client::client::ClientBuilder;
+/// let client = ClientBuilder::new("my-app", "1.0.0").build();
+/// ```
+pub struct ClientBuilder {
+    client_name: String,
+    client_version: String,
+    no_verify_tls: bool,
+}
+
+impl ClientBuilder {
+    /// Create a new builder. `client_name` and `client_version` identify the
+    /// calling application in requests to M-Lab servers.
+    pub fn new(client_name: impl Into<String>, client_version: impl Into<String>) -> Self {
+        ClientBuilder {
+            client_name: client_name.into(),
+            client_version: client_version.into(),
+            no_verify_tls: false,
         }
     }
 
+    /// Skip TLS certificate verification.
+    pub fn danger_no_verify_tls(mut self) -> Self {
+        self.no_verify_tls = true;
+        self
+    }
+
+    /// Build the [`Client`].
+    pub fn build(self) -> Client {
+        Client {
+            client_name: self.client_name,
+            client_version: self.client_version,
+            no_verify_tls: self.no_verify_tls,
+        }
+    }
+}
+
+impl Client {
     /// Establish a WebSocket connection to the given service URL.
     ///
     /// `service_url` is the full URL from the Locate API, e.g.
@@ -102,9 +140,8 @@ impl Client {
                 .with_custom_certificate_verifier(Arc::new(NoVerifier))
                 .with_no_client_auth()
         } else {
-            let root_store = rustls::RootCertStore::from_iter(
-                webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-            );
+            let root_store =
+                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
             rustls::ClientConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
                 .unwrap()
@@ -119,6 +156,8 @@ impl Client {
         Ok(ws_stream)
     }
 
+    /// Use the Locate API to find the nearest M-Lab server and extract
+    /// download/upload service URLs.
     pub async fn locate_test_targets(&self) -> Result<LocateResult> {
         let targets = locate::nearest(&self.user_agent()).await?;
         let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
@@ -141,6 +180,10 @@ impl Client {
         })
     }
 
+    /// Start a download test and return a channel of [`Measurement`] updates.
+    ///
+    /// The test runs in a background task and the channel closes when the
+    /// test completes or times out.
     pub async fn start_download(&self, url: &str) -> Result<mpsc::Receiver<Measurement>> {
         // connect
         let ws = self.connect(url).await?;
@@ -153,6 +196,10 @@ impl Client {
         Ok(rx)
     }
 
+    /// Start an upload test and return a channel of [`Measurement`] updates.
+    ///
+    /// The test runs in a background task and the channel closes when the
+    /// test completes or times out.
     pub async fn start_upload(&self, url: &str) -> Result<mpsc::Receiver<Measurement>> {
         // connect
         let ws = self.connect(url).await?;
@@ -176,9 +223,13 @@ impl Client {
     }
 }
 
+/// Result of locating the nearest M-Lab server.
 pub struct LocateResult {
+    /// Fully qualified domain name of the selected server.
     pub server_fqdn: String,
+    /// WebSocket URL for the download test, if available.
     pub download_url: Option<String>,
+    /// WebSocket URL for the upload test, if available.
     pub upload_url: Option<String>,
 }
 
@@ -189,7 +240,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_download_real_server() {
-        let client = Client::new("ndt7-client-rust".into(), env!("CARGO_PKG_VERSION").into(), false);
+        let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
         let locate = client.locate_test_targets().await.unwrap();
         let mut rx = client
             .start_download(&locate.download_url.unwrap())
@@ -208,7 +259,7 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_upload_real_server() {
-        let client = Client::new("ndt7-client-rust".into(), env!("CARGO_PKG_VERSION").into(), false);
+        let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
         let locate = client.locate_test_targets().await.unwrap();
         let mut rx = client
             .start_upload(&locate.upload_url.unwrap())

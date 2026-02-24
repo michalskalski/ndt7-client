@@ -1,20 +1,32 @@
+//! Post-test summary computation.
+
 use serde::Serialize;
 
 use crate::spec::Measurement;
 
+/// Results for a single subtest (download or upload).
 #[derive(Debug, Clone, Serialize)]
 pub struct SubtestSummary {
+    /// Throughput in megabits per second.
     pub throughput_mbps: f64,
+    /// Minimum RTT in milliseconds (from server TCPInfo).
     pub latency_ms: f64,
+    /// Percentage of bytes retransmitted.
     pub retransmission_pct: f64,
 }
 
+/// Aggregated results for an entire speed test session.
 #[derive(Debug, Clone, Serialize)]
 pub struct Summary {
+    /// FQDN of the M-Lab server used.
     pub server_fqdn: String,
+    /// Client IP address as seen by the server.
     pub client_ip: String,
+    /// Server IP address.
     pub server_ip: String,
+    /// Download subtest results, if a download test was run.
     pub download: Option<SubtestSummary>,
+    /// Upload subtest results, if an upload test was run.
     pub upload: Option<SubtestSummary>,
 }
 
@@ -73,6 +85,7 @@ impl SubtestSummary {
 }
 
 impl Summary {
+    /// Compute a summary from the final measurements of each subtest.
     pub fn from_measurements(
         server_fqdn: String,
         dl_client: Option<&Measurement>,
@@ -86,9 +99,9 @@ impl Summary {
         let client_ip = conn.map(|c| strip_port(&c.client)).unwrap_or_default();
         let server_ip = conn.map(|c| strip_port(&c.server)).unwrap_or_default();
 
-        let download = dl_client.zip(dl_server).and_then(|(c, s)| {
-            SubtestSummary::from_download(c, s)
-        });
+        let download = dl_client
+            .zip(dl_server)
+            .and_then(|(c, s)| SubtestSummary::from_download(c, s));
 
         Summary {
             server_fqdn,

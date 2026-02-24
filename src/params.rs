@@ -1,3 +1,5 @@
+//! Protocol constants and tuning parameters.
+
 use std::time::Duration;
 
 /// Value of the Sec-WebSocket-Protocol header.

@@ -1,23 +1,41 @@
+//! M-Lab Locate API client.
+//!
+//! The Locate API returns the nearest M-Lab servers with signed WebSocket
+//! URLs for running ndt7 tests.
+
 use crate::error::Result;
 use serde::Deserialize;
 use std::collections::HashMap;
 
+/// Base URL for the M-Lab Locate v2 API.
 pub const LOCATE_URL: &str = "https://locate.measurementlab.net/v2/nearest/ndt/ndt7";
 
+/// A single M-Lab server returned by the Locate API.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Target {
+    /// FQDN of the server machine.
     pub machine: String,
+    /// Map of service key (e.g. `"wss:///ndt/v7/download"`) to full URL with access token.
     pub urls: HashMap<String, String>,
 }
 
+/// Top-level response from the Locate API.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LocateResponse {
+    /// Ordered list of nearby servers (closest first).
     pub results: Vec<Target>,
 }
 
+/// Query the Locate API for the nearest M-Lab servers.
 pub async fn nearest(user_agent: &str) -> Result<Vec<Target>> {
     let client = reqwest::Client::builder().user_agent(user_agent).build()?;
-    let response: LocateResponse = client.get(LOCATE_URL).send().await?.error_for_status()?.json().await?;
+    let response: LocateResponse = client
+        .get(LOCATE_URL)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     Ok(response.results)
 }
 

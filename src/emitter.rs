@@ -1,3 +1,10 @@
+//! Output formatting for test events.
+//!
+//! The [`Emitter`] trait defines callbacks for each stage of a test run.
+//! Two implementations are provided:
+//! - [`HumanReadableEmitter`] — live progress and a formatted summary on a terminal.
+//! - [`JsonEmitter`] — one JSON object per line, suitable for machine consumption.
+
 use std::io::Write;
 
 use serde::Serialize;
@@ -32,21 +39,31 @@ enum Event<'a> {
     },
 }
 
+/// Callbacks for ndt7 test lifecycle events.
 pub trait Emitter {
+    /// Called when a subtest is about to begin.
     fn on_starting(&mut self, test: TestKind) -> Result<()>;
+    /// Called when a subtest encounters an error.
     fn on_error(&mut self, test: TestKind, err: &str) -> Result<()>;
+    /// Called after the WebSocket connection is established.
     fn on_connected(&mut self, test: TestKind, fqdn: &str) -> Result<()>;
+    /// Called for each measurement received during the download test.
     fn on_download_event(&mut self, m: &Measurement) -> Result<()>;
+    /// Called for each measurement received during the upload test.
     fn on_upload_event(&mut self, m: &Measurement) -> Result<()>;
+    /// Called when a subtest finishes.
     fn on_complete(&mut self, test: TestKind) -> Result<()>;
+    /// Called after all tests complete, with the final summary.
     fn on_summary(&mut self, s: &Summary) -> Result<()>;
 }
 
+/// Emits human-readable progress and results to a writer.
 pub struct HumanReadableEmitter<W: Write> {
     out: W,
 }
 
 impl<W: Write> HumanReadableEmitter<W> {
+    /// Create a new emitter writing to `out`.
     pub fn new(out: W) -> Self {
         HumanReadableEmitter { out }
     }
@@ -134,11 +151,13 @@ impl<W: Write> Emitter for HumanReadableEmitter<W> {
     }
 }
 
+/// Emits one JSON object per line for each event.
 pub struct JsonEmitter<W: Write> {
     out: W,
 }
 
 impl<W: Write> JsonEmitter<W> {
+    /// Create a new JSON emitter writing to `out`.
     pub fn new(out: W) -> Self {
         JsonEmitter { out }
     }

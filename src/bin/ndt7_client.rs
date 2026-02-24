@@ -1,5 +1,5 @@
 use clap::Parser;
-use ndt7_client::client::Client;
+use ndt7_client::client::{Client, ClientBuilder};
 use ndt7_client::emitter::{Emitter, HumanReadableEmitter, JsonEmitter};
 use ndt7_client::error::Ndt7Error;
 use ndt7_client::params;
@@ -100,7 +100,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Format::Json => Box::new(JsonEmitter::new(std::io::stdout())),
     };
 
-    let client = Client::new("ndt7-client-rs".into(), env!("CARGO_PKG_VERSION").into(), cli.no_verify);
+    let mut builder = ClientBuilder::new("ndt7-client-rs", env!("CARGO_PKG_VERSION"));
+    if cli.no_verify {
+        builder = builder.danger_no_verify_tls();
+    }
+    let client = builder.build();
     let targets = resolve_targets(&cli, &client).await?;
 
     if targets.download_url.is_none() && targets.upload_url.is_none() {

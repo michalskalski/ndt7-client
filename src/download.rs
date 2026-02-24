@@ -1,3 +1,8 @@
+//! ndt7 download test implementation.
+//!
+//! Receives binary and text WebSocket messages from the server until the
+//! connection closes or [`params::DOWNLOAD_TIMEOUT`] elapses.
+
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
@@ -8,6 +13,10 @@ use crate::error::Result;
 use crate::params;
 use crate::spec::{AppInfo, Measurement, Origin, TestKind};
 
+/// Run the download test on an established WebSocket connection.
+///
+/// Measurements are sent on `tx` as they arrive. The function returns when
+/// the server closes the connection or the timeout expires.
 pub async fn run(mut ws: WsStream, tx: mpsc::Sender<Measurement>) -> Result<()> {
     let result = timeout(params::DOWNLOAD_TIMEOUT, download_loop(&mut ws, &tx)).await;
 
