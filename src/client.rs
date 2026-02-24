@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{Connector, MaybeTlsStream, connect_async_tls_with_config};
 use url::Url;
@@ -123,11 +124,15 @@ impl Client {
             .append_pair("client_os", std::env::consts::OS)
             .append_pair("client_arch", std::env::consts::ARCH);
 
-        // Build the HTTP request with the WebSocket subprotocol header.
+        // Build the HTTP request with required headers.
         let mut request = url.to_string().into_client_request()?;
         request.headers_mut().insert(
             "Sec-WebSocket-Protocol",
             params::SEC_WEBSOCKET_PROTOCOL.parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            "User-Agent",
+            self.user_agent().parse().unwrap(),
         );
 
         // Connect using rustls for TLS.
@@ -150,8 +155,12 @@ impl Client {
         };
 
         let connector = Connector::Rustls(Arc::new(tls_config));
-        let (ws_stream, _response) =
-            connect_async_tls_with_config(request, None, false, Some(connector)).await?;
+        let (ws_stream, _response) = timeout(
+            params::IO_TIMEOUT,
+            connect_async_tls_with_config(request, None, false, Some(connector)),
+        )
+        .await
+        .map_err(|_| Ndt7Error::Timeout)??;
 
         Ok(ws_stream)
     }
