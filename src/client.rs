@@ -189,34 +189,30 @@ impl Client {
         })
     }
 
-    /// Start a download test and return a channel of [`Measurement`] updates.
+    /// Start a download test and return a channel of [`Measurement`] results.
     ///
-    /// The test runs in a background task and the channel closes when the
-    /// test completes or times out.
-    pub async fn start_download(&self, url: &str) -> Result<mpsc::Receiver<Measurement>> {
-        // connect
+    /// The test runs in a background task. Each item is `Ok(measurement)` or
+    /// `Err(error)` if the test fails mid-stream. An error is always the last
+    /// item - the channel closes immediately after.
+    pub async fn start_download(&self, url: &str) -> Result<mpsc::Receiver<Result<Measurement>>> {
         let ws = self.connect(url).await?;
-
-        // spawn download task, return receiver
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
-            let _ = download::run(ws, tx).await;
+            download::run(ws, tx).await;
         });
         Ok(rx)
     }
 
-    /// Start an upload test and return a channel of [`Measurement`] updates.
+    /// Start an upload test and return a channel of [`Measurement`] results.
     ///
-    /// The test runs in a background task and the channel closes when the
-    /// test completes or times out.
-    pub async fn start_upload(&self, url: &str) -> Result<mpsc::Receiver<Measurement>> {
-        // connect
+    /// The test runs in a background task. Each item is `Ok(measurement)` or
+    /// `Err(error)` if the test fails mid-stream. An error is always the last
+    /// item - the channel closes immediately after.
+    pub async fn start_upload(&self, url: &str) -> Result<mpsc::Receiver<Result<Measurement>>> {
         let ws = self.connect(url).await?;
-
-        // spawn upload task, return receiver
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
-            let _ = upload::run(ws, tx).await;
+            upload::run(ws, tx).await;
         });
         Ok(rx)
     }

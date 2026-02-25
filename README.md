@@ -20,7 +20,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run download test
     if let Some(url) = &targets.download_url {
         let mut rx = client.start_download(url).await?;
-        while let Some(m) = rx.recv().await {
+        while let Some(result) = rx.recv().await {
+            let m = result?;
             if m.origin == Some(Origin::Client) {
                 if let Some(app) = &m.app_info {
                     let mbps = 8.0 * app.num_bytes as f64 / app.elapsed_time as f64;
@@ -33,7 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Run upload test
     if let Some(url) = &targets.upload_url {
         let mut rx = client.start_upload(url).await?;
-        while let Some(m) = rx.recv().await {
+        while let Some(result) = rx.recv().await {
+            let m = result?;
             if m.origin == Some(Origin::Server) {
                 if let Some(tcp) = &m.tcp_info {
                     if let (Some(received), Some(elapsed)) =

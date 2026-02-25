@@ -17,8 +17,11 @@
 //!
 //! if let Some(url) = &targets.download_url {
 //!     let mut rx = client.start_download(url).await?;
-//!     while let Some(m) = rx.recv().await {
-//!         println!("{:?}", m);
+//!     while let Some(result) = rx.recv().await {
+//!         match result {
+//!             Ok(m) => println!("{:?}", m),
+//!             Err(e) => eprintln!("error: {e}"),
+//!         }
 //!     }
 //! }
 //! # Ok(())

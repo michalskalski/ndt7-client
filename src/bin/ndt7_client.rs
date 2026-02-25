@@ -121,14 +121,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         emitter.on_starting(t)?;
         let mut rx = client.start_download(url).await?;
         emitter.on_connected(t, &targets.server_fqdn)?;
-        while let Some(m) = rx.recv().await {
-            if !cli.quiet {
-                emitter.on_download_event(&m)?;
-            }
-            match m.origin {
-                Some(Origin::Client) => dl_client_measurement = Some(m),
-                Some(Origin::Server) => dl_server_measurement = Some(m),
-                None => {}
+        while let Some(result) = rx.recv().await {
+            match result {
+                Ok(m) => {
+                    if !cli.quiet {
+                        emitter.on_download_event(&m)?;
+                    }
+                    match m.origin {
+                        Some(Origin::Client) => dl_client_measurement = Some(m),
+                        Some(Origin::Server) => dl_server_measurement = Some(m),
+                        None => {}
+                    }
+                }
+                Err(e) => emitter.on_error(t, &e.to_string())?,
             }
         }
         emitter.on_complete(t)?;
@@ -139,12 +144,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         emitter.on_starting(t)?;
         let mut rx = client.start_upload(url).await?;
         emitter.on_connected(t, &targets.server_fqdn)?;
-        while let Some(m) = rx.recv().await {
-            if !cli.quiet {
-                emitter.on_upload_event(&m)?;
-            }
-            if m.origin == Some(Origin::Server) {
-                ul_measurement = Some(m);
+        while let Some(result) = rx.recv().await {
+            match result {
+                Ok(m) => {
+                    if !cli.quiet {
+                        emitter.on_upload_event(&m)?;
+                    }
+                    if m.origin == Some(Origin::Server) {
+                        ul_measurement = Some(m);
+                    }
+                }
+                Err(e) => emitter.on_error(t, &e.to_string())?,
             }
         }
         emitter.on_complete(t)?;

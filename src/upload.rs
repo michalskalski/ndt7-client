@@ -21,21 +21,28 @@ use crate::spec::{AppInfo, Measurement, Origin, TestKind};
 ///
 /// Measurements are sent on `tx` as they arrive. The function returns when
 /// the timeout expires or the server closes the connection.
-pub async fn run(ws: WsStream, tx: mpsc::Sender<Measurement>) -> Result<()> {
+pub async fn run(ws: WsStream, tx: mpsc::Sender<Result<Measurement>>) {
     let (sink, stream) = ws.split();
 
-    tokio::select! {
-       _ = timeout(params::UPLOAD_TIMEOUT, upload_loop(sink, &tx)) => {}
-       _ = read_counterflow(stream, &tx) => {}
-    }
+    let result = tokio::select! {
+       r = timeout(params::UPLOAD_TIMEOUT, upload_loop(sink, &tx)) => {
+           match r {
+               Ok(inner) => inner,
+               Err(_) => Ok(()), // timeout is normal completion
+           }
+       }
+       r = read_counterflow(stream, &tx) => r
+    };
 
-    Ok(())
+    if let Err(e) = result {
+        let _ = tx.send(Err(e)).await;
+    }
 }
 
 // Reads server counter-flow measurements
 async fn read_counterflow(
     mut stream: SplitStream<WsStream>,
-    tx: &mpsc::Sender<Measurement>,
+    tx: &mpsc::Sender<Result<Measurement>>,
 ) -> Result<()> {
     while let Some(msg) = stream.next().await {
         let msg = msg?;
@@ -44,7 +51,7 @@ async fn read_counterflow(
                 let mut measurement: Measurement = serde_json::from_str(&text)?;
                 measurement.origin = Some(Origin::Server);
                 measurement.test = Some(TestKind::Upload);
-                let _ = tx.send(measurement).await;
+                let _ = tx.send(Ok(measurement)).await;
             }
             Message::Close(_) => break,
             _ => {} // Ping/Pong handled by tokio-tungstenite
@@ -55,7 +62,7 @@ async fn read_counterflow(
 
 async fn upload_loop(
     mut sink: SplitSink<WsStream, Message>,
-    tx: &mpsc::Sender<Measurement>,
+    tx: &mpsc::Sender<Result<Measurement>>,
 ) -> Result<()> {
     let start = Instant::now();
     let mut prev_update = start;
@@ -81,7 +88,7 @@ async fn upload_loop(
         if prev_update.elapsed() >= params::UPDATE_INTERVAL {
             prev_update = Instant::now();
             let _ = tx
-                .send(Measurement {
+                .send(Ok(Measurement {
                     app_info: Some(AppInfo {
                         elapsed_time: start.elapsed().as_micros() as i64,
                         num_bytes: total_bytes,
@@ -89,7 +96,7 @@ async fn upload_loop(
                     origin: Some(Origin::Client),
                     test: Some(TestKind::Upload),
                     ..Default::default()
-                })
+                }))
                 .await;
         }
     }
