@@ -130,10 +130,9 @@ impl Client {
             "Sec-WebSocket-Protocol",
             params::SEC_WEBSOCKET_PROTOCOL.parse().unwrap(),
         );
-        request.headers_mut().insert(
-            "User-Agent",
-            self.user_agent().parse().unwrap(),
-        );
+        request
+            .headers_mut()
+            .insert("User-Agent", self.user_agent().parse().unwrap());
 
         // Connect using rustls for TLS.
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());

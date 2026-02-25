@@ -28,7 +28,7 @@ pub struct LocateResponse {
 
 /// Query the Locate API for the nearest M-Lab servers.
 ///
-/// Returns [`Ndt7Error::NoCapacity`] when the Locate API responds with
+/// Returns [`crate::error::Ndt7Error::NoCapacity`] when the Locate API responds with
 /// 204 (M-Lab is out of capacity).
 pub async fn nearest(user_agent: &str) -> Result<Vec<Target>> {
     let client = reqwest::Client::builder().user_agent(user_agent).build()?;

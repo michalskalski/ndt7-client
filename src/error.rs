@@ -32,6 +32,9 @@ pub enum Ndt7Error {
     /// An I/O error occurred.
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
+    /// Protocol violation
+    #[error("protocol violation: {0}")]
+    ProtocolViolation(String),
 }
 
 // Reducing size of Ndt7Error by boxing the large tungstenite::Error variant.

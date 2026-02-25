@@ -13,7 +13,7 @@ use tokio::time::{Instant, timeout};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::client::WsStream;
-use crate::error::Result;
+use crate::error::{Ndt7Error, Result};
 use crate::params;
 use crate::spec::{AppInfo, Measurement, Origin, TestKind};
 
@@ -52,6 +52,11 @@ async fn read_counterflow(
                 measurement.origin = Some(Origin::Server);
                 measurement.test = Some(TestKind::Upload);
                 let _ = tx.send(Ok(measurement)).await;
+            }
+            Message::Binary(_) => {
+                return Err(Ndt7Error::ProtocolViolation(
+                    "server sent unexpected binary message during upload".into(),
+                ));
             }
             Message::Close(_) => break,
             _ => {} // Ping/Pong handled by tokio-tungstenite
