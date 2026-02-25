@@ -1,5 +1,8 @@
 # ndt7-client
 
+[![CI](https://github.com/michalskalski/ndt7-client/actions/workflows/ci.yml/badge.svg)](https://github.com/michalskalski/ndt7-client/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ndt7-client.svg)](https://crates.io/crates/ndt7-client)
+
 A Rust client library and CLI for [ndt7](https://github.com/m-lab/ndt-server/blob/master/spec/ndt7-protocol.md), the network speed test protocol developed by [M-Lab](https://www.measurementlab.net/).
 
 ndt7 measures download and upload throughput using WebSocket connections to M-Lab's global server infrastructure, providing TCP-level metrics (latency, retransmission) alongside application-level throughput.
