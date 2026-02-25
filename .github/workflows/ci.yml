@@ -19,9 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - id: msrv
+        run: |
+          msrv=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[0].rust_version' | sed -E 's/^1\.([0-9]{2})$/1.\1.0/')
+          echo "msrv=$msrv" >> $GITHUB_OUTPUT
       - uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1.15.2
         with:
-          toolchain: msrv
+          toolchain: ${{ steps.msrv.outputs.msrv }}
       - run: cargo build --all-features
 
   clippy:
