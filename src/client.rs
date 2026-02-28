@@ -134,29 +134,11 @@ impl Client {
             .headers_mut()
             .insert("User-Agent", self.user_agent().parse().unwrap());
 
-        // Connect using rustls for TLS.
-        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-        let tls_config = if self.no_verify_tls {
-            rustls::ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(NoVerifier))
-                .with_no_client_auth()
-        } else {
-            let root_store =
-                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            rustls::ClientConfig::builder_with_provider(provider)
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .with_root_certificates(root_store)
-                .with_no_client_auth()
-        };
+        let connector = (url.scheme() == "wss").then(|| self.tls_connector());
 
-        let connector = Connector::Rustls(Arc::new(tls_config));
         let (ws_stream, _response) = timeout(
             params::IO_TIMEOUT,
-            connect_async_tls_with_config(request, None, false, Some(connector)),
+            connect_async_tls_with_config(request, None, false, connector),
         )
         .await
         .map_err(|_| Ndt7Error::Timeout)??;
@@ -165,26 +147,16 @@ impl Client {
     }
 
     /// Use the Locate API to find the nearest M-Lab server and extract
-    /// download/upload service URLs.
-    pub async fn locate_test_targets(&self) -> Result<LocateResult> {
+    /// download/upload service URLs for the given scheme (`"wss"` or `"ws"`).
+    pub async fn locate_test_targets(&self, scheme: &str) -> Result<LocateResult> {
         let targets = locate::nearest(&self.user_agent()).await?;
         let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
-
-        let mut dl_url: Option<String> = None;
-        let mut ul_url: Option<String> = None;
-
-        for (key, url) in target.urls {
-            if key.contains(params::DOWNLOAD_URL_PATH) {
-                dl_url = Some(url);
-            } else if key.contains(params::UPLOAD_URL_PATH) {
-                ul_url = Some(url);
-            }
-        }
+        let urls = target.service_urls(scheme);
 
         Ok(LocateResult {
             server_fqdn: target.machine,
-            download_url: dl_url,
-            upload_url: ul_url,
+            download_url: urls.download,
+            upload_url: urls.upload,
         })
     }
 
@@ -216,9 +188,30 @@ impl Client {
         Ok(rx)
     }
 
+    fn tls_connector(&self) -> Connector {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let tls_config = if self.no_verify_tls {
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoVerifier))
+                .with_no_client_auth()
+        } else {
+            let root_store =
+                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(root_store)
+                .with_no_client_auth()
+        };
+        Connector::Rustls(Arc::new(tls_config))
+    }
+
     fn user_agent(&self) -> String {
         format!(
-            "{}/{} {}/{}",
+            "{}/{} {}-rs/{}",
             &self.client_name,
             &self.client_version,
             env!("CARGO_PKG_NAME"),
@@ -245,7 +238,7 @@ mod tests {
     #[ignore]
     async fn test_download_real_server() {
         let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
-        let locate = client.locate_test_targets().await.unwrap();
+        let locate = client.locate_test_targets("wss").await.unwrap();
         let mut rx = client
             .start_download(&locate.download_url.unwrap())
             .await
@@ -264,7 +257,7 @@ mod tests {
     #[ignore]
     async fn test_upload_real_server() {
         let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
-        let locate = client.locate_test_targets().await.unwrap();
+        let locate = client.locate_test_targets("wss").await.unwrap();
         let mut rx = client
             .start_upload(&locate.upload_url.unwrap())
             .await

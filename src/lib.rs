@@ -13,7 +13,7 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = ClientBuilder::new("my-app", "0.1.0").build();
-//! let targets = client.locate_test_targets().await?;
+//! let targets = client.locate_test_targets("wss").await?;
 //!
 //! if let Some(url) = &targets.download_url {
 //!     let mut rx = client.start_download(url).await?;

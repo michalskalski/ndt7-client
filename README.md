@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = ClientBuilder::new("my-app", "0.1.0").build();
 
     // Locate the nearest M-Lab server
-    let targets = client.locate_test_targets().await?;
+    let targets = client.locate_test_targets("wss").await?;
 
     // Run download test
     if let Some(url) = &targets.download_url {
@@ -73,14 +73,18 @@ ndt7-client
 Options:
 
 ```
---server <host:port>   Use a specific server (bypass locate API)
---service-url <url>    Full service URL with access token
---format human|json    Output format (default: human)
---no-download          Skip download test
---no-upload            Skip upload test
---quiet                Show summary only
---no-verify            Skip TLS certificate verification
---no-tls               Use unencrypted WebSocket
+--list-servers              List available M-Lab servers and exit
+--server                    Interactive server picker (via locate API)
+--server <hostname>         Select a specific server (via locate API)
+--server <host:port> --no-locate
+                            Connect directly, bypassing locate API
+--service-url <url>         Full service URL with access token
+--format human|json         Output format (default: human)
+--no-download               Skip download test
+--no-upload                 Skip upload test
+--quiet                     Show summary only
+--no-verify                 Skip TLS certificate verification
+--no-tls                    Use unencrypted WebSocket
 ```
 
 ## References
