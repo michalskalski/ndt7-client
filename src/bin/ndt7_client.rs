@@ -1,10 +1,17 @@
+use std::io;
+use std::io::Write;
+use std::process::exit;
+
 use clap::Parser;
 use ndt7_client::client::{Client, ClientBuilder};
 use ndt7_client::emitter::{Emitter, HumanReadableEmitter, JsonEmitter};
 use ndt7_client::error::Ndt7Error;
-use ndt7_client::params;
+use ndt7_client::locate::Target;
 use ndt7_client::spec::{Measurement, Origin, TestKind};
 use ndt7_client::summary::Summary;
+use ndt7_client::{locate, params};
+
+const CLIENT_NAME: &str = "ndt7-client-rs";
 
 #[derive(Clone, Debug, clap::ValueEnum)]
 enum Format {
@@ -14,12 +21,17 @@ enum Format {
 
 #[derive(Parser, Debug)]
 struct Cli {
-    /// Optional ndt7 server hostname (e.g. localhost:8080). Bypasses locate API.
-    #[arg(long)]
+    /// Server hostname. With --no-locate: connect directly (e.g. localhost:8080).
+    /// Without --no-locate: select this server via locate API (gets access tokens).
+    /// With no value: interactive server picker.
+    #[arg(long, group = "server_selection", num_args = 0..=1, default_missing_value = "")]
     server: Option<String>,
-    /// Service URL specifies target hostname and other URL fields like access token. Overrides --server.
-    #[arg(long)]
+    /// Full service URL with path and access token. For advanced use / scripting.
+    #[arg(long, group = "server_selection")]
     service_url: Option<String>,
+    /// Skip locate API, connect directly to the server specified by --server
+    #[arg(long, requires = "server")]
+    no_locate: bool,
     /// Use unencrypted WebSocket (ws://) instead of TLS (wss://)
     #[arg(long)]
     no_tls: bool,
@@ -38,6 +50,9 @@ struct Cli {
     /// Skip tls certificate verification
     #[arg(long)]
     no_verify: bool,
+    /// List available target servers and exit
+    #[arg(long)]
+    list_servers: bool,
 }
 
 struct Targets {
@@ -46,48 +61,147 @@ struct Targets {
     upload_url: Option<String>,
 }
 
+fn user_agent() -> String {
+    format!("{CLIENT_NAME}/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Parse a --service-url into download or upload target based on its path.
+fn resolve_from_service_url(url: &str) -> Result<Targets, Box<dyn std::error::Error>> {
+    let parsed = url::Url::parse(url)?;
+    let fqdn = parsed.host_str().ok_or(Ndt7Error::NoTargets)?.to_string();
+    match parsed.path() {
+        p if p.contains(params::DOWNLOAD_URL_PATH) => Ok(Targets {
+            server_fqdn: fqdn,
+            download_url: Some(url.to_string()),
+            upload_url: None,
+        }),
+        p if p.contains(params::UPLOAD_URL_PATH) => Ok(Targets {
+            server_fqdn: fqdn,
+            download_url: None,
+            upload_url: Some(url.to_string()),
+        }),
+        _ => Err(Ndt7Error::ServiceUnsupported(format!(
+            "path must contain {} or {}",
+            params::DOWNLOAD_URL_PATH,
+            params::UPLOAD_URL_PATH
+        ))
+        .into()),
+    }
+}
+
+/// Build URLs for a direct connection (no locate API, no tokens).
+fn resolve_direct(server: &str, scheme: &str, no_download: bool, no_upload: bool) -> Targets {
+    Targets {
+        server_fqdn: server.to_string(),
+        download_url: Some(format!("{scheme}://{server}{}", params::DOWNLOAD_URL_PATH))
+            .filter(|_| !no_download),
+        upload_url: Some(format!("{scheme}://{server}{}", params::UPLOAD_URL_PATH))
+            .filter(|_| !no_upload),
+    }
+}
+
+/// Call locate API, present interactive picker, return chosen server's URLs.
+async fn resolve_interactive(
+    scheme: &str,
+    no_download: bool,
+    no_upload: bool,
+) -> Result<Targets, Box<dyn std::error::Error>> {
+    let targets = locate::nearest(&user_agent()).await?;
+    print_targets(&targets);
+    let target = loop {
+        print!("Select server [1-{}]: ", targets.len());
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        match input.trim().parse::<usize>() {
+            Ok(n) if n >= 1 && n <= targets.len() => break &targets[n - 1],
+            Ok(_) => println!("choice out of range"),
+            Err(_) => println!("enter a number"),
+        }
+    };
+    let urls = target.service_urls(scheme);
+    Ok(Targets {
+        server_fqdn: target.machine.clone(),
+        download_url: urls.download.filter(|_| !no_download),
+        upload_url: urls.upload.filter(|_| !no_upload),
+    })
+}
+
+/// Call locate API, find a specific server by hostname, return its URLs with tokens.
+async fn resolve_from_locate(
+    server: &str,
+    scheme: &str,
+    no_download: bool,
+    no_upload: bool,
+) -> Result<Targets, Box<dyn std::error::Error>> {
+    let targets = locate::nearest(&user_agent()).await?;
+    let target = targets
+        .iter()
+        .find(|t| t.machine == server)
+        .ok_or_else(|| {
+            Ndt7Error::ServiceUnsupported(format!(
+                "server '{}' not found in locate results; use --list-servers to see available servers",
+                server
+            ))
+        })?;
+    let urls = target.service_urls(scheme);
+    Ok(Targets {
+        server_fqdn: target.machine.clone(),
+        download_url: urls.download.filter(|_| !no_download),
+        upload_url: urls.upload.filter(|_| !no_upload),
+    })
+}
+
+/// Call locate API, pick nearest server automatically.
+async fn resolve_nearest(
+    client: &Client,
+    scheme: &str,
+    no_download: bool,
+    no_upload: bool,
+) -> Result<Targets, Box<dyn std::error::Error>> {
+    let locate = client.locate_test_targets(scheme).await?;
+    Ok(Targets {
+        server_fqdn: locate.server_fqdn,
+        download_url: locate.download_url.filter(|_| !no_download),
+        upload_url: locate.upload_url.filter(|_| !no_upload),
+    })
+}
+
 async fn resolve_targets(
     cli: &Cli,
     client: &Client,
 ) -> Result<Targets, Box<dyn std::error::Error>> {
     let scheme = if cli.no_tls { "ws" } else { "wss" };
 
-    if let Some(ref s) = cli.service_url {
-        let parsed = url::Url::parse(s)?;
-        let fqdn = parsed.host_str().ok_or(Ndt7Error::NoTargets)?.to_string();
-        match parsed.path() {
-            p if p.contains(params::DOWNLOAD_URL_PATH) => Ok(Targets {
-                server_fqdn: fqdn,
-                download_url: Some(s.clone()),
-                upload_url: None,
-            }),
-            p if p.contains(params::UPLOAD_URL_PATH) => Ok(Targets {
-                server_fqdn: fqdn,
-                download_url: None,
-                upload_url: Some(s.clone()),
-            }),
-            _ => Err(Ndt7Error::ServiceUnsupported(format!(
-                "path must contain {} or {}",
-                params::DOWNLOAD_URL_PATH,
-                params::UPLOAD_URL_PATH
-            ))
-            .into()),
-        }
+    if let Some(ref url) = cli.service_url {
+        resolve_from_service_url(url)
     } else if let Some(ref server) = cli.server {
-        Ok(Targets {
-            server_fqdn: server.clone(),
-            download_url: Some(format!("{scheme}://{server}{}", params::DOWNLOAD_URL_PATH))
-                .filter(|_| !cli.no_download),
-            upload_url: Some(format!("{scheme}://{server}{}", params::UPLOAD_URL_PATH))
-                .filter(|_| !cli.no_upload),
-        })
+        if cli.no_locate {
+            Ok(resolve_direct(
+                server,
+                scheme,
+                cli.no_download,
+                cli.no_upload,
+            ))
+        } else if server.is_empty() {
+            resolve_interactive(scheme, cli.no_download, cli.no_upload).await
+        } else {
+            resolve_from_locate(server, scheme, cli.no_download, cli.no_upload).await
+        }
     } else {
-        let locate = client.locate_test_targets().await?;
-        Ok(Targets {
-            server_fqdn: locate.server_fqdn,
-            download_url: locate.download_url.filter(|_| !cli.no_download),
-            upload_url: locate.upload_url.filter(|_| !cli.no_upload),
-        })
+        resolve_nearest(client, scheme, cli.no_download, cli.no_upload).await
+    }
+}
+
+fn print_targets(targets: &[Target]) {
+    println!("{:<4} {:<65} Location", "#", "Server");
+    for (pos, target) in targets.iter().enumerate() {
+        let location = match &target.location {
+            Some(loc) if !loc.city.is_empty() => format!("{}, {}", loc.city, loc.country),
+            Some(loc) => loc.country.clone(),
+            None => "-".to_string(),
+        };
+        println!("{:<4} {:<65} {}", pos + 1, target.machine, location);
     }
 }
 
@@ -95,12 +209,33 @@ async fn resolve_targets(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    if cli.no_locate && cli.server.as_deref() == Some("") {
+        eprintln!("error: --no-locate requires a server hostname");
+        exit(1);
+    }
+
+    if cli.list_servers {
+        let targets = locate::nearest(&user_agent()).await?;
+        if targets.is_empty() {
+            eprintln!("no targets");
+            exit(1)
+        }
+        match cli.format {
+            Format::Human => print_targets(&targets),
+            Format::Json => {
+                let out = serde_json::to_string_pretty(&targets)?;
+                println!("{out}")
+            }
+        }
+        return Ok(());
+    }
+
     let mut emitter: Box<dyn Emitter> = match cli.format {
         Format::Human => Box::new(HumanReadableEmitter::new(std::io::stdout())),
         Format::Json => Box::new(JsonEmitter::new(std::io::stdout())),
     };
 
-    let mut builder = ClientBuilder::new("ndt7-client-rs", env!("CARGO_PKG_VERSION"));
+    let mut builder = ClientBuilder::new(CLIENT_NAME, env!("CARGO_PKG_VERSION"));
     if cli.no_verify {
         builder = builder.danger_no_verify_tls();
     }
