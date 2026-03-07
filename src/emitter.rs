@@ -72,6 +72,7 @@ impl<W: Write> HumanReadableEmitter<W> {
 impl<W: Write> Emitter for HumanReadableEmitter<W> {
     fn on_starting(&mut self, test: TestKind) -> Result<()> {
         write!(self.out, "\rstarting {:?}", test)?;
+        self.out.flush()?;
         Ok(())
     }
 

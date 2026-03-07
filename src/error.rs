@@ -1,5 +1,6 @@
 //! Error types for the ndt7 client.
 
+use crate::client::AddressFamily;
 use thiserror::Error;
 
 /// Errors that can occur during ndt7 operations.
@@ -35,6 +36,9 @@ pub enum Ndt7Error {
     /// Protocol violation
     #[error("protocol violation: {0}")]
     ProtocolViolation(String),
+    /// No addresses of the requested IP family were found for the host.
+    #[error("no {0} address found")]
+    NoAddressFound(AddressFamily),
 }
 
 // Reducing size of Ndt7Error by boxing the large tungstenite::Error variant.

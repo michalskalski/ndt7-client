@@ -83,6 +83,8 @@ Options:
 --no-download               Skip download test
 --no-upload                 Skip upload test
 --quiet                     Show summary only
+--ipv4                      Force IPv4 connections
+--ipv6                      Force IPv6 connections
 --no-verify                 Skip TLS certificate verification
 --no-tls                    Use unencrypted WebSocket
 ```
