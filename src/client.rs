@@ -1,12 +1,14 @@
 //! High-level ndt7 test client.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::{Connector, MaybeTlsStream, connect_async_tls_with_config};
+use tokio_tungstenite::tungstenite::http::Request;
+use tokio_tungstenite::{Connector, MaybeTlsStream, client_async_tls_with_config};
 use url::Url;
 
 use crate::download;
@@ -60,6 +62,39 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
 /// Type alias for the WebSocket stream used by download and upload tests.
 pub type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// IP address family preference for test connections.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub enum AddressFamily {
+    /// Use whichever address family DNS resolution returns first.
+    #[default]
+    Any,
+    /// Force IPv4 connections only.
+    Ipv4Only,
+    /// Force IPv6 connections only.
+    Ipv6Only,
+}
+
+impl AddressFamily {
+    /// Pick the first address matching this family, or `None` if no match.
+    pub fn select_addr(&self, addrs: impl Iterator<Item = SocketAddr>) -> Option<SocketAddr> {
+        match self {
+            AddressFamily::Any => addrs.into_iter().next(),
+            AddressFamily::Ipv4Only => addrs.into_iter().find(|a| a.is_ipv4()),
+            AddressFamily::Ipv6Only => addrs.into_iter().find(|a| a.is_ipv6()),
+        }
+    }
+}
+
+impl std::fmt::Display for AddressFamily {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AddressFamily::Any => write!(f, "any"),
+            AddressFamily::Ipv4Only => write!(f, "IPv4"),
+            AddressFamily::Ipv6Only => write!(f, "IPv6"),
+        }
+    }
+}
+
 /// An ndt7 test client.
 ///
 /// Use [`ClientBuilder`] to create a client, then [`Client::locate_test_targets`]
@@ -69,6 +104,8 @@ pub struct Client {
     client_name: String,
     client_version: String,
     no_verify_tls: bool,
+    no_tls: bool,
+    address_family: AddressFamily,
 }
 
 /// Builder for [`Client`].
@@ -81,6 +118,8 @@ pub struct ClientBuilder {
     client_name: String,
     client_version: String,
     no_verify_tls: bool,
+    no_tls: bool,
+    address_family: AddressFamily,
 }
 
 impl ClientBuilder {
@@ -91,12 +130,26 @@ impl ClientBuilder {
             client_name: client_name.into(),
             client_version: client_version.into(),
             no_verify_tls: false,
+            no_tls: false,
+            address_family: AddressFamily::Any,
         }
     }
 
     /// Skip TLS certificate verification.
-    pub fn danger_no_verify_tls(mut self) -> Self {
+    pub fn no_verify_tls(mut self) -> Self {
         self.no_verify_tls = true;
+        self
+    }
+
+    /// Use unencrypted ws:// connection
+    pub fn no_tls(mut self) -> Self {
+        self.no_tls = true;
+        self
+    }
+
+    /// Set the preferred IP address family for connections.
+    pub fn address_family(mut self, af: AddressFamily) -> Self {
+        self.address_family = af;
         self
     }
 
@@ -106,6 +159,8 @@ impl ClientBuilder {
             client_name: self.client_name,
             client_version: self.client_version,
             no_verify_tls: self.no_verify_tls,
+            no_tls: self.no_tls,
+            address_family: self.address_family,
         }
     }
 }
@@ -122,7 +177,12 @@ impl Client {
             .append_pair("client_name", &self.client_name)
             .append_pair("client_version", &self.client_version)
             .append_pair("client_os", std::env::consts::OS)
-            .append_pair("client_arch", std::env::consts::ARCH);
+            .append_pair("client_arch", std::env::consts::ARCH)
+            .append_pair(
+                "client_library_name",
+                &format!("{}-rs", env!("CARGO_PKG_NAME")),
+            )
+            .append_pair("client_library_version", env!("CARGO_PKG_VERSION"));
 
         // Build the HTTP request with required headers.
         let mut request = url.to_string().into_client_request()?;
@@ -134,23 +194,43 @@ impl Client {
             .headers_mut()
             .insert("User-Agent", self.user_agent().parse().unwrap());
 
+        timeout(params::IO_TIMEOUT, self.connect_ws(request, &url))
+            .await
+            .map_err(|_| Ndt7Error::Timeout)?
+    }
+
+    async fn connect_ws(&self, request: Request<()>, url: &Url) -> Result<WsStream> {
         let connector = (url.scheme() == "wss").then(|| self.tls_connector());
 
-        let (ws_stream, _response) = timeout(
-            params::IO_TIMEOUT,
-            connect_async_tls_with_config(request, None, false, connector),
-        )
-        .await
-        .map_err(|_| Ndt7Error::Timeout)??;
+        // DNS resolution
+        let host = url
+            .host_str()
+            .ok_or(Ndt7Error::ServiceUnsupported("missing host in URL".into()))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or(Ndt7Error::ServiceUnsupported("missing port".into()))?;
+        let addrs = tokio::net::lookup_host((host, port)).await?;
+
+        // Filter by address family
+        let addr = self
+            .address_family
+            .select_addr(addrs)
+            .ok_or(Ndt7Error::NoAddressFound(self.address_family))?;
+
+        // TCP + TLS + WebSocket
+        let tcp = TcpStream::connect(addr).await?;
+        let (ws_stream, _response) =
+            client_async_tls_with_config(request, tcp, None, connector).await?;
 
         Ok(ws_stream)
     }
 
     /// Use the Locate API to find the nearest M-Lab server and extract
     /// download/upload service URLs for the given scheme (`"wss"` or `"ws"`).
-    pub async fn locate_test_targets(&self, scheme: &str) -> Result<LocateResult> {
+    pub async fn locate_test_targets(&self) -> Result<LocateResult> {
         let targets = locate::nearest(&self.user_agent()).await?;
         let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
+        let scheme = if self.no_tls { "ws" } else { "wss" };
         let urls = target.service_urls(scheme);
 
         Ok(LocateResult {
@@ -234,11 +314,66 @@ pub struct LocateResult {
 mod tests {
     use super::*;
 
+    use std::net::SocketAddr;
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn select_addr_any_returns_first() {
+        let addrs = vec![addr("127.0.0.1:443"), addr("[::1]:443")];
+        let result = AddressFamily::Any.select_addr(addrs.into_iter());
+        assert_eq!(result, Some(addr("127.0.0.1:443")));
+    }
+
+    #[test]
+    fn select_addr_ipv4_skips_ipv6() {
+        let addrs = vec![addr("[::1]:443"), addr("127.0.0.1:443")];
+        let result = AddressFamily::Ipv4Only.select_addr(addrs.into_iter());
+        assert_eq!(result, Some(addr("127.0.0.1:443")));
+    }
+
+    #[test]
+    fn select_addr_ipv6_skips_ipv4() {
+        let addrs = vec![addr("127.0.0.1:443"), addr("[::1]:443")];
+        let result = AddressFamily::Ipv6Only.select_addr(addrs.into_iter());
+        assert_eq!(result, Some(addr("[::1]:443")));
+    }
+
+    #[test]
+    fn select_addr_ipv4_none_when_only_ipv6() {
+        let addrs = vec![addr("[::1]:443"), addr("[::2]:443")];
+        let result = AddressFamily::Ipv4Only.select_addr(addrs.into_iter());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn select_addr_ipv6_none_when_only_ipv4() {
+        let addrs = vec![addr("127.0.0.1:443"), addr("10.0.0.1:443")];
+        let result = AddressFamily::Ipv6Only.select_addr(addrs.into_iter());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn select_addr_empty_returns_none() {
+        let addrs: Vec<SocketAddr> = vec![];
+        assert_eq!(
+            AddressFamily::Any.select_addr(addrs.clone().into_iter()),
+            None
+        );
+        assert_eq!(
+            AddressFamily::Ipv4Only.select_addr(addrs.clone().into_iter()),
+            None
+        );
+        assert_eq!(AddressFamily::Ipv6Only.select_addr(addrs.into_iter()), None);
+    }
+
     #[tokio::test]
     #[ignore]
     async fn test_download_real_server() {
         let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
-        let locate = client.locate_test_targets("wss").await.unwrap();
+        let locate = client.locate_test_targets().await.unwrap();
         let mut rx = client
             .start_download(&locate.download_url.unwrap())
             .await
@@ -257,7 +392,7 @@ mod tests {
     #[ignore]
     async fn test_upload_real_server() {
         let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
-        let locate = client.locate_test_targets("wss").await.unwrap();
+        let locate = client.locate_test_targets().await.unwrap();
         let mut rx = client
             .start_upload(&locate.upload_url.unwrap())
             .await

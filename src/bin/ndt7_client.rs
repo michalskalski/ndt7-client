@@ -3,7 +3,7 @@ use std::io::Write;
 use std::process::exit;
 
 use clap::Parser;
-use ndt7_client::client::{Client, ClientBuilder};
+use ndt7_client::client::{AddressFamily, Client, ClientBuilder};
 use ndt7_client::emitter::{Emitter, HumanReadableEmitter, JsonEmitter};
 use ndt7_client::error::Ndt7Error;
 use ndt7_client::locate::Target;
@@ -53,6 +53,12 @@ struct Cli {
     /// List available target servers and exit
     #[arg(long)]
     list_servers: bool,
+    /// Force IPv4 connections
+    #[arg(long, group = "ip_version")]
+    ipv4: bool,
+    /// Force IPv6 connections
+    #[arg(long, group = "ip_version")]
+    ipv6: bool,
 }
 
 struct Targets {
@@ -155,11 +161,10 @@ async fn resolve_from_locate(
 /// Call locate API, pick nearest server automatically.
 async fn resolve_nearest(
     client: &Client,
-    scheme: &str,
     no_download: bool,
     no_upload: bool,
 ) -> Result<Targets, Box<dyn std::error::Error>> {
-    let locate = client.locate_test_targets(scheme).await?;
+    let locate = client.locate_test_targets().await?;
     Ok(Targets {
         server_fqdn: locate.server_fqdn,
         download_url: locate.download_url.filter(|_| !no_download),
@@ -189,7 +194,7 @@ async fn resolve_targets(
             resolve_from_locate(server, scheme, cli.no_download, cli.no_upload).await
         }
     } else {
-        resolve_nearest(client, scheme, cli.no_download, cli.no_upload).await
+        resolve_nearest(client, cli.no_download, cli.no_upload).await
     }
 }
 
@@ -206,7 +211,14 @@ fn print_targets(targets: &[Target]) {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    if let Err(e) = run().await {
+        eprintln!("\nerror: {e}");
+        exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     if cli.no_locate && cli.server.as_deref() == Some("") {
@@ -237,9 +249,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut builder = ClientBuilder::new(CLIENT_NAME, env!("CARGO_PKG_VERSION"));
     if cli.no_verify {
-        builder = builder.danger_no_verify_tls();
+        builder = builder.no_verify_tls();
     }
-    let client = builder.build();
+    if cli.no_tls {
+        builder = builder.no_tls();
+    }
+    let af = match (cli.ipv4, cli.ipv6) {
+        (true, _) => AddressFamily::Ipv4Only,
+        (_, true) => AddressFamily::Ipv6Only,
+        _ => AddressFamily::Any,
+    };
+    let client = builder.address_family(af).build();
     let targets = resolve_targets(&cli, &client).await?;
 
     if targets.download_url.is_none() && targets.upload_url.is_none() {
