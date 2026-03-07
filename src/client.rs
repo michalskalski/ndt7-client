@@ -69,6 +69,7 @@ pub struct Client {
     client_name: String,
     client_version: String,
     no_verify_tls: bool,
+    no_tls: bool,
 }
 
 /// Builder for [`Client`].
@@ -81,6 +82,7 @@ pub struct ClientBuilder {
     client_name: String,
     client_version: String,
     no_verify_tls: bool,
+    no_tls: bool,
 }
 
 impl ClientBuilder {
@@ -91,12 +93,19 @@ impl ClientBuilder {
             client_name: client_name.into(),
             client_version: client_version.into(),
             no_verify_tls: false,
+            no_tls: false,
         }
     }
 
     /// Skip TLS certificate verification.
-    pub fn danger_no_verify_tls(mut self) -> Self {
+    pub fn no_verify_tls(mut self) -> Self {
         self.no_verify_tls = true;
+        self
+    }
+
+    /// Use unencrypted ws:// connection
+    pub fn no_tls(mut self) -> Self {
+        self.no_tls = true;
         self
     }
 
@@ -106,6 +115,7 @@ impl ClientBuilder {
             client_name: self.client_name,
             client_version: self.client_version,
             no_verify_tls: self.no_verify_tls,
+            no_tls: self.no_tls,
         }
     }
 }
@@ -122,7 +132,9 @@ impl Client {
             .append_pair("client_name", &self.client_name)
             .append_pair("client_version", &self.client_version)
             .append_pair("client_os", std::env::consts::OS)
-            .append_pair("client_arch", std::env::consts::ARCH);
+            .append_pair("client_arch", std::env::consts::ARCH)
+            .append_pair("client_library_name", &format!("{}-rs", env!("CARGO_PKG_NAME")))
+            .append_pair("client_library_version", env!("CARGO_PKG_VERSION"));
 
         // Build the HTTP request with required headers.
         let mut request = url.to_string().into_client_request()?;
@@ -148,9 +160,10 @@ impl Client {
 
     /// Use the Locate API to find the nearest M-Lab server and extract
     /// download/upload service URLs for the given scheme (`"wss"` or `"ws"`).
-    pub async fn locate_test_targets(&self, scheme: &str) -> Result<LocateResult> {
+    pub async fn locate_test_targets(&self) -> Result<LocateResult> {
         let targets = locate::nearest(&self.user_agent()).await?;
         let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
+        let scheme = if self.no_tls { "ws" } else { "wss" };
         let urls = target.service_urls(scheme);
 
         Ok(LocateResult {
@@ -238,7 +251,7 @@ mod tests {
     #[ignore]
     async fn test_download_real_server() {
         let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
-        let locate = client.locate_test_targets("wss").await.unwrap();
+        let locate = client.locate_test_targets().await.unwrap();
         let mut rx = client
             .start_download(&locate.download_url.unwrap())
             .await
@@ -257,7 +270,7 @@ mod tests {
     #[ignore]
     async fn test_upload_real_server() {
         let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
-        let locate = client.locate_test_targets("wss").await.unwrap();
+        let locate = client.locate_test_targets().await.unwrap();
         let mut rx = client
             .start_upload(&locate.upload_url.unwrap())
             .await

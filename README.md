@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = ClientBuilder::new("my-app", "0.1.0").build();
 
     // Locate the nearest M-Lab server
-    let targets = client.locate_test_targets("wss").await?;
+    let targets = client.locate_test_targets().await?;
 
     // Run download test
     if let Some(url) = &targets.download_url {

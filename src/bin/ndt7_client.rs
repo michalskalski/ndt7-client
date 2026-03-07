@@ -155,11 +155,10 @@ async fn resolve_from_locate(
 /// Call locate API, pick nearest server automatically.
 async fn resolve_nearest(
     client: &Client,
-    scheme: &str,
     no_download: bool,
     no_upload: bool,
 ) -> Result<Targets, Box<dyn std::error::Error>> {
-    let locate = client.locate_test_targets(scheme).await?;
+    let locate = client.locate_test_targets().await?;
     Ok(Targets {
         server_fqdn: locate.server_fqdn,
         download_url: locate.download_url.filter(|_| !no_download),
@@ -189,7 +188,7 @@ async fn resolve_targets(
             resolve_from_locate(server, scheme, cli.no_download, cli.no_upload).await
         }
     } else {
-        resolve_nearest(client, scheme, cli.no_download, cli.no_upload).await
+        resolve_nearest(client, cli.no_download, cli.no_upload).await
     }
 }
 
@@ -237,7 +236,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut builder = ClientBuilder::new(CLIENT_NAME, env!("CARGO_PKG_VERSION"));
     if cli.no_verify {
-        builder = builder.danger_no_verify_tls();
+        builder = builder.no_verify_tls();
+    }
+    if cli.no_tls {
+        builder = builder.no_tls();
     }
     let client = builder.build();
     let targets = resolve_targets(&cli, &client).await?;
