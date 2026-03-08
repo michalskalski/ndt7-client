@@ -60,14 +60,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Install:
 
-```sh
+Pre-built binaries for Linux, macOS, Windows, and illumos are available on the
+[GitHub releases page](https://github.com/michalskalski/ndt7-client/releases).
+
+Or install from crates.io:
+
+```console
 cargo install ndt7-client
 ```
 
 Run a speed test:
 
-```sh
-ndt7-client
+```console
+$ ndt7-client
+Download in progress with mlab2-hnd02.mlab-oti.measurement-lab.org
+Avg. speed:  1456.0 Mbit/s
+Download: complete
+Upload in progress with mlab2-hnd02.mlab-oti.measurement-lab.org
+Avg. speed:  1734.5 Mbit/s
+Upload: complete
+
+Test results
+
+    Server: mlab2-hnd02.mlab-oti.measurement-lab.org
+    Client: 2001:db8::1
+
+              Download
+     Throughput:  1456.0 Mbit/s
+        Latency:     3.0 ms
+ Retransmission:     0.5 %
+
+              Upload
+     Throughput:  1734.5 Mbit/s
+        Latency:     3.3 ms
 ```
 
 Options:
