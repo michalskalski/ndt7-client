@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.2.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build only — leave release as draft, do not publish'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  VERSION: ${{ inputs.tag }}
+
+jobs:
+  create-release:
+    name: Create release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.VERSION }}
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "Release $VERSION already exists, ensuring it is a draft"
+            gh release edit "$VERSION" --draft
+          else
+            gh release create "$VERSION" --draft --generate-notes --title "$VERSION"
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_cross: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use_cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            use_cross: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.VERSION }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1.15.2
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --version 0.2.5 --locked
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        shell: bash
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          ARCHIVE="ndt7-client-${VERSION}-${{ matrix.target }}.tar.gz"
+          STAGING="ndt7-client-${VERSION}-${{ matrix.target }}"
+          mkdir "$STAGING"
+          cp "target/${{ matrix.target }}/release/ndt7-client" "$STAGING/"
+          cp LICENSE README.md "$STAGING/"
+          tar czf "$ARCHIVE" "$STAGING"
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ARCHIVE="ndt7-client-${VERSION}-${{ matrix.target }}.zip"
+          STAGING="ndt7-client-${VERSION}-${{ matrix.target }}"
+          mkdir "$STAGING"
+          cp "target/${{ matrix.target }}/release/ndt7-client.exe" "$STAGING/"
+          cp LICENSE README.md "$STAGING/"
+          7z a "$ARCHIVE" "$STAGING"
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$VERSION" "$ARCHIVE" "$ARCHIVE.sha256"
+        shell: bash
+
+  build-illumos:
+    name: Build x86_64-unknown-illumos
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.VERSION }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.illumos
+          load: true
+          tags: illumos-builder
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build with Docker
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            -w /src \
+            illumos-builder \
+            cargo build --release --target x86_64-unknown-illumos
+
+      - name: Package
+        run: |
+          TARGET="x86_64-unknown-illumos"
+          ARCHIVE="ndt7-client-${VERSION}-${TARGET}.tar.gz"
+          STAGING="ndt7-client-${VERSION}-${TARGET}"
+          mkdir "$STAGING"
+          cp "target/${TARGET}/release/ndt7-client" "$STAGING/"
+          cp LICENSE README.md "$STAGING/"
+          tar czf "$ARCHIVE" "$STAGING"
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$VERSION" "$ARCHIVE" "$ARCHIVE.sha256"
+
+  publish-release:
+    name: Publish release
+    if: inputs.dry_run != true
+    needs: [build, build-illumos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ env.VERSION }}
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$VERSION" --draft=false

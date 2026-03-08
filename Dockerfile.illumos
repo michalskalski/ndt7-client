@@ -1,0 +1,109 @@
+# Cross-compilation environment for x86_64-unknown-illumos
+# Based on the Rust project's own illumos CI setup:
+# https://github.com/rust-lang/rust/blob/master/src/ci/docker/host-x86_64/dist-x86_64-illumos/
+FROM ubuntu:22.04
+
+ARG RUST_VERSION=stable
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    file \
+    libgmp-dev \
+    libmpfr-dev \
+    libmpc-dev \
+    texinfo \
+    bzip2 \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Build the illumos cross-compilation toolchain ---
+# This mirrors what rust-lang/rust CI does in illumos-toolchain.sh
+
+ENV ARCH=x86_64
+ENV PREFIX=/opt/illumos/x86_64
+ENV SYSROOT_DIR=$PREFIX/sysroot
+ENV BUILD_TARGET=x86_64-pc-solaris2.10
+ENV PATH="$PREFIX/bin:/usr/local/bin:/usr/bin:/bin"
+
+# 1. Download and extract the illumos sysroot (headers + libraries)
+# Checksums match rust-lang/rust CI: src/ci/docker/scripts/illumos-toolchain.sh
+RUN SYSROOT_VER='20181213-de6af22ae73b-v1' && \
+    SYSROOT_SHA256='ee792d956dfa6967453cebe9286a149143290d296a8ce4b8a91d36bea89f8112' && \
+    SYSROOT_TAR="illumos-sysroot-i386-$SYSROOT_VER.tar.gz" && \
+    SYSROOT_URL="https://github.com/illumos/sysroot/releases/download/$SYSROOT_VER/$SYSROOT_TAR" && \
+    curl -fLo "/tmp/$SYSROOT_TAR" "$SYSROOT_URL" && \
+    echo "$SYSROOT_SHA256  /tmp/$SYSROOT_TAR" | sha256sum -c - && \
+    mkdir -p "$SYSROOT_DIR" && \
+    tar xzf "/tmp/$SYSROOT_TAR" -C "$SYSROOT_DIR" && \
+    rm "/tmp/$SYSROOT_TAR"
+
+# 2. Build binutils (provides x86_64-illumos-ar, x86_64-illumos-as, etc.)
+RUN BINUTILS_VERSION='2.40' && \
+    BINUTILS_SHA256='f8298eb153a4b37d112e945aa5cb2850040bcf26a3ea65b5a715c83afe05e48a' && \
+    BINUTILS_TAR="binutils-$BINUTILS_VERSION.tar.bz2" && \
+    curl -fLo "/tmp/$BINUTILS_TAR" "https://ftp.gnu.org/gnu/binutils/$BINUTILS_TAR" && \
+    echo "$BINUTILS_SHA256  /tmp/$BINUTILS_TAR" | sha256sum -c - && \
+    tar xjf "/tmp/$BINUTILS_TAR" -C /tmp && \
+    rm "/tmp/$BINUTILS_TAR" && \
+    mkdir -p /tmp/build-binutils && cd /tmp/build-binutils && \
+    /tmp/binutils-$BINUTILS_VERSION/configure \
+      --prefix="$PREFIX" \
+      --target="$BUILD_TARGET" \
+      --program-prefix=x86_64-illumos- \
+      --with-sysroot="$SYSROOT_DIR" && \
+    make -j"$(nproc)" && make install && \
+    rm -rf /tmp/binutils-* /tmp/build-binutils
+
+# 3. Build GCC cross-compiler (provides x86_64-illumos-gcc)
+RUN GCC_VERSION='8.4.0' && \
+    GCC_SHA256='e30a6e52d10e1f27ed55104ad233c30bd1e99cfb5ff98ab022dc941edd1b2dd4' && \
+    GCC_TAR="gcc-$GCC_VERSION.tar.xz" && \
+    curl -fLo "/tmp/$GCC_TAR" "https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/$GCC_TAR" && \
+    echo "$GCC_SHA256  /tmp/$GCC_TAR" | sha256sum -c - && \
+    tar xJf "/tmp/$GCC_TAR" -C /tmp && \
+    rm "/tmp/$GCC_TAR" && \
+    mkdir -p /tmp/build-gcc && cd /tmp/build-gcc && \
+    export CFLAGS='-fPIC' CXXFLAGS='-fPIC' \
+           CFLAGS_FOR_TARGET='-fPIC' CXXFLAGS_FOR_TARGET='-fPIC' && \
+    /tmp/gcc-$GCC_VERSION/configure \
+      --prefix="$PREFIX" \
+      --target="$BUILD_TARGET" \
+      --program-prefix=x86_64-illumos- \
+      --with-sysroot="$SYSROOT_DIR" \
+      --with-gnu-as \
+      --with-gnu-ld \
+      --disable-nls \
+      --disable-libgomp \
+      --disable-libquadmath \
+      --disable-libssp \
+      --disable-libvtv \
+      --disable-libcilkrts \
+      --disable-libada \
+      --disable-libsanitizer \
+      --disable-libquadmath-support \
+      --disable-shared \
+      --enable-tls && \
+    make -j"$(nproc)" && make install && \
+    rm -rf /tmp/gcc-* /tmp/build-gcc
+
+# Symlink toolchain into PATH
+RUN ls "$PREFIX/bin/" | grep '^x86_64-illumos-' | \
+    xargs -I% ln -sf "$PREFIX/bin/%" /usr/local/bin/
+
+# --- Install Rust ---
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain $RUST_VERSION
+ENV PATH="/root/.cargo/bin:$PATH"
+
+RUN rustup target add x86_64-unknown-illumos
+
+# Tell cargo/cc-rs which tools to use for the illumos target
+ENV AR_x86_64_unknown_illumos=x86_64-illumos-ar
+ENV RANLIB_x86_64_unknown_illumos=x86_64-illumos-ranlib
+ENV CC_x86_64_unknown_illumos=x86_64-illumos-gcc
+ENV CXX_x86_64_unknown_illumos=x86_64-illumos-g++
+ENV CARGO_TARGET_X86_64_UNKNOWN_ILLUMOS_LINKER=x86_64-illumos-gcc
+
+WORKDIR /src
