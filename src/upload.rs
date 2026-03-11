@@ -28,7 +28,10 @@ pub async fn run(ws: WsStream, tx: mpsc::Sender<Result<Measurement>>) {
        r = timeout(params::UPLOAD_TIMEOUT, upload_loop(sink, &tx)) => {
            match r {
                Ok(inner) => inner,
-               Err(_) => Ok(()), // timeout is normal completion
+               // Overall timeout is normal completion, test ran its full duration.
+               // Only errors from upload_loop/read_counterflow, like per-message
+               // IO timeouts, propagate to the channel below.
+               Err(_) => Ok(()),
            }
        }
        r = read_counterflow(stream, &tx) => r
@@ -44,7 +47,9 @@ async fn read_counterflow(
     mut stream: SplitStream<WsStream>,
     tx: &mpsc::Sender<Result<Measurement>>,
 ) -> Result<()> {
-    while let Some(msg) = stream.next().await {
+    loop {
+        let msg = timeout(params::IO_TIMEOUT, stream.next()).await?;
+        let Some(msg) = msg else { break };
         let msg = msg?;
         match msg {
             Message::Text(text) => {
@@ -80,7 +85,11 @@ async fn upload_loop(
     let mut payload = Bytes::from(buf);
 
     loop {
-        sink.send(Message::Binary(payload.clone())).await?;
+        timeout(
+            params::IO_TIMEOUT,
+            sink.send(Message::Binary(payload.clone())),
+        )
+        .await??;
         total_bytes += payload.len() as i64;
         if msg_size < params::MAX_MESSAGE_SIZE
             && msg_size <= total_bytes as usize / params::SCALING_FRACTION
