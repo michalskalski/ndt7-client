@@ -20,7 +20,7 @@ pub enum Ndt7Error {
     JsonError(#[from] serde_json::Error),
     /// A test exceeded its time limit.
     #[error("timeout occured")]
-    Timeout,
+    Timeout(#[from] tokio::time::error::Elapsed),
     /// A WebSocket-level error occurred.
     #[error("websocket error: {0}")]
     WebSocket(Box<tokio_tungstenite::tungstenite::Error>),

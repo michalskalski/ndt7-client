@@ -22,7 +22,9 @@ use crate::spec::{AppInfo, Measurement, Origin, TestKind};
 pub async fn run(mut ws: WsStream, tx: mpsc::Sender<Result<Measurement>>) {
     let result = timeout(params::DOWNLOAD_TIMEOUT, download_loop(&mut ws, &tx)).await;
 
-    // timeout is normal completion; real errors go on the channel
+    // Overall timeout (Err) is normal completion, test ran its full duration.
+    // Only errors from download_loop (Ok(Err)), like per-message IO timeouts,
+    // are sent on the channel.
     if let Ok(Err(e)) = result {
         let _ = tx.send(Err(e)).await;
     }
@@ -33,7 +35,9 @@ async fn download_loop(ws: &mut WsStream, tx: &mpsc::Sender<Result<Measurement>>
     let mut prev_update = start;
     let mut total_bytes: i64 = 0;
 
-    while let Some(msg) = ws.next().await {
+    loop {
+        let msg = timeout(params::IO_TIMEOUT, ws.next()).await?;
+        let Some(msg) = msg else { break };
         let msg = msg?;
         match msg {
             Message::Binary(data) => {
@@ -65,4 +69,56 @@ async fn download_loop(ws: &mut WsStream, tx: &mpsc::Sender<Result<Measurement>>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+
+    use futures_util::SinkExt;
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    async fn mock_stalling_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // server task in the background
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let ws_stream = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let (mut sink, _stream) = ws_stream.split();
+            sink.send(Message::Text(
+                r#"{"AppInfo":{"ElapsedTime":1000,"NumBytes":8192}}"#.into(),
+            ))
+            .await
+            .unwrap();
+
+            futures_util::future::pending::<()>().await;
+        });
+        addr
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_mid_test_io_timeout() {
+        let addr = mock_stalling_server().await;
+        let (ws_stream, _respone) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(async move { run(ws_stream, tx).await });
+
+        let mut results = Vec::new();
+        while let Some(result) = rx.recv().await {
+            results.push(result);
+        }
+
+        // measurement + the timeout error
+        assert!(results.len() >= 2);
+        assert!(results[0].is_ok());
+        assert!(matches!(
+            results.last(),
+            Some(Err(crate::error::Ndt7Error::Timeout(_)))
+        ));
+    }
 }

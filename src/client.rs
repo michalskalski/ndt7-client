@@ -194,9 +194,7 @@ impl Client {
             .headers_mut()
             .insert("User-Agent", self.user_agent().parse().unwrap());
 
-        timeout(params::IO_TIMEOUT, self.connect_ws(request, &url))
-            .await
-            .map_err(|_| Ndt7Error::Timeout)?
+        timeout(params::IO_TIMEOUT, self.connect_ws(request, &url)).await?
     }
 
     async fn connect_ws(&self, request: Request<()>, url: &Url) -> Result<WsStream> {
