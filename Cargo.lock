@@ -706,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "ndt7-client"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "clap",
