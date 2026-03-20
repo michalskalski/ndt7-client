@@ -13,7 +13,8 @@ use url::Url;
 
 use crate::download;
 use crate::error::{Ndt7Error, Result};
-use crate::spec::Measurement;
+use crate::locate::Target;
+use crate::spec::{Measurement, TestKind};
 use crate::upload;
 use crate::{locate, params};
 
@@ -95,17 +96,26 @@ impl std::fmt::Display for AddressFamily {
     }
 }
 
+/// Handle to a running ndt7 test, returned by [`Client::start_download`] and [`Client::start_upload`].
+pub struct TestHandle {
+    /// Fully qualified domain name of the server running the test.
+    pub server_fqdn: String,
+    /// Channel of measurement results from the running test.
+    pub rx: mpsc::Receiver<Result<Measurement>>,
+}
+
 /// An ndt7 test client.
 ///
-/// Use [`ClientBuilder`] to create a client, then [`Client::locate_test_targets`]
-/// to find a nearby M-Lab server, and [`Client::start_download`] /
-/// [`Client::start_upload`] to run tests.
+/// Use [`ClientBuilder`] to create a client, then [`Client::start_download`] /
+/// [`Client::start_upload`] to run tests. Pass `None` to auto-locate the nearest
+/// M-Lab server with retry, or `Some(url)` for a specific server.
 pub struct Client {
     client_name: String,
     client_version: String,
     no_verify_tls: bool,
     no_tls: bool,
     address_family: AddressFamily,
+    targets: Option<Vec<Target>>,
 }
 
 /// Builder for [`Client`].
@@ -161,6 +171,7 @@ impl ClientBuilder {
             no_verify_tls: self.no_verify_tls,
             no_tls: self.no_tls,
             address_family: self.address_family,
+            targets: None,
         }
     }
 }
@@ -223,33 +234,18 @@ impl Client {
         Ok(ws_stream)
     }
 
-    /// Use the Locate API to find the nearest M-Lab server and extract
-    /// download/upload service URLs for the given scheme (`"wss"` or `"ws"`).
-    pub async fn locate_test_targets(&self) -> Result<LocateResult> {
-        let targets = locate::nearest(&self.user_agent()).await?;
-        let target = targets.into_iter().next().ok_or(Ndt7Error::NoTargets)?;
-        let scheme = if self.no_tls { "ws" } else { "wss" };
-        let urls = target.service_urls(scheme);
-
-        Ok(LocateResult {
-            server_fqdn: target.machine,
-            download_url: urls.download,
-            upload_url: urls.upload,
-        })
-    }
-
     /// Start a download test and return a channel of [`Measurement`] results.
     ///
     /// The test runs in a background task. Each item is `Ok(measurement)` or
     /// `Err(error)` if the test fails mid-stream. An error is always the last
     /// item - the channel closes immediately after.
-    pub async fn start_download(&self, url: &str) -> Result<mpsc::Receiver<Result<Measurement>>> {
-        let ws = self.connect(url).await?;
+    pub async fn start_download(&mut self, url: Option<&str>) -> Result<TestHandle> {
+        let (ws, server_fqdn) = self.connect_with_retry(url, TestKind::Download).await?;
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
             download::run(ws, tx).await;
         });
-        Ok(rx)
+        Ok(TestHandle { server_fqdn, rx })
     }
 
     /// Start an upload test and return a channel of [`Measurement`] results.
@@ -257,13 +253,50 @@ impl Client {
     /// The test runs in a background task. Each item is `Ok(measurement)` or
     /// `Err(error)` if the test fails mid-stream. An error is always the last
     /// item - the channel closes immediately after.
-    pub async fn start_upload(&self, url: &str) -> Result<mpsc::Receiver<Result<Measurement>>> {
-        let ws = self.connect(url).await?;
+    pub async fn start_upload(&mut self, url: Option<&str>) -> Result<TestHandle> {
+        let (ws, server_fqdn) = self.connect_with_retry(url, TestKind::Upload).await?;
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
             upload::run(ws, tx).await;
         });
-        Ok(rx)
+        Ok(TestHandle { server_fqdn, rx })
+    }
+
+    async fn connect_with_retry(
+        &mut self,
+        url: Option<&str>,
+        test_kind: TestKind,
+    ) -> Result<(WsStream, String)> {
+        if let Some(url) = url {
+            let ws = self.connect(url).await?;
+            let fqdn = Url::parse(url)?.host_str().unwrap_or("unknown").to_string();
+            Ok((ws, fqdn))
+        } else {
+            let scheme = if self.no_tls { "ws" } else { "wss" };
+            let mut last_err = Ndt7Error::NoTargets;
+            let targets = self.get_targets().await?.to_vec();
+            for t in &targets {
+                let url = match test_kind {
+                    TestKind::Download => t.service_urls(scheme).download,
+                    TestKind::Upload => t.service_urls(scheme).upload,
+                };
+                let Some(url) = url else { continue };
+                match self.connect(&url).await {
+                    Ok(ws) => return Ok((ws, t.machine.clone())),
+                    Err(e) => {
+                        last_err = e;
+                    }
+                }
+            }
+            Err(last_err)
+        }
+    }
+
+    async fn get_targets(&mut self) -> Result<&[Target]> {
+        if self.targets.is_none() {
+            self.targets = Some(locate::nearest(&self.user_agent()).await?);
+        }
+        Ok(self.targets.as_deref().unwrap())
     }
 
     fn tls_connector(&self) -> Connector {
@@ -296,23 +329,22 @@ impl Client {
             env!("CARGO_PKG_VERSION")
         )
     }
-}
 
-/// Result of locating the nearest M-Lab server.
-pub struct LocateResult {
-    /// Fully qualified domain name of the selected server.
-    pub server_fqdn: String,
-    /// WebSocket URL for the download test, if available.
-    pub download_url: Option<String>,
-    /// WebSocket URL for the upload test, if available.
-    pub upload_url: Option<String>,
+    #[cfg(test)]
+    fn set_targets(&mut self, targets: Vec<Target>) {
+        self.targets = Some(targets);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use std::net::SocketAddr;
+    use futures_util::{SinkExt, StreamExt};
+    use std::{collections::HashMap, net::SocketAddr};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 
     fn addr(s: &str) -> SocketAddr {
         s.parse().unwrap()
@@ -367,18 +399,92 @@ mod tests {
         assert_eq!(AddressFamily::Ipv6Only.select_addr(addrs.into_iter()), None);
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_download_real_server() {
-        let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
-        let locate = client.locate_test_targets().await.unwrap();
-        let mut rx = client
-            .start_download(&locate.download_url.unwrap())
+    async fn mock_refusing_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            drop(stream);
+        });
+        addr
+    }
+
+    async fn mock_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            #[allow(clippy::result_large_err)]
+            let ws_stream =
+                tokio_tungstenite::accept_hdr_async(stream, |req: &Request, mut resp: Response| {
+                    // to mitigate SecWebSocketSubProtocolError(NoSubProtocol)
+                    if let Some(proto) = req.headers().get("Sec-WebSocket-Protocol") {
+                        resp.headers_mut()
+                            .insert("Sec-WebSocket-Protocol", proto.clone());
+                    }
+                    Ok(resp)
+                })
+                .await
+                .unwrap();
+            let (mut sink, _stream) = ws_stream.split();
+            sink.send(Message::Text(
+                r#"{"AppInfo":{"ElapsedTime":1000,"NumBytes":8192}}"#.into(),
+            ))
             .await
             .unwrap();
 
+            sink.send(Message::Close(None)).await.unwrap();
+        });
+        addr
+    }
+
+    fn local_target(addr: &std::net::SocketAddr) -> Target {
+        let machine = addr.ip().to_string();
+        let urls = HashMap::from([(
+            "ws:///ndt/v7/download".into(),
+            format!("ws://{addr}/ndt/v7/download"),
+        )]);
+        Target {
+            machine,
+            urls,
+            location: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_retry() {
+        let bad_server = mock_refusing_server().await;
+        let good_server = mock_server().await;
+        let targets = vec![local_target(&bad_server), local_target(&good_server)];
+
+        let mut client = ClientBuilder::new("test", "test").no_tls().build();
+        client.set_targets(targets);
+
+        let mut results = Vec::new();
+        let handle = client.start_download(None).await.unwrap();
+
+        assert_eq!(handle.server_fqdn, good_server.ip().to_string());
+        let mut rx = handle.rx;
+
+        while let Some(result) = rx.recv().await {
+            results.push(result);
+        }
+
+        assert!(!results.is_empty());
+        assert!(results[0].is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_download_real_server() {
+        let mut client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
+        let handle = client.start_download(None).await.unwrap();
+        println!("connected to {}", handle.server_fqdn);
+        let mut rx = handle.rx;
+
         let mut count = 0;
-        println!("connected to {}", locate.server_fqdn);
         while let Some(m) = rx.recv().await {
             count += 1;
             println!("{:?}", m);
@@ -389,15 +495,12 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_upload_real_server() {
-        let client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
-        let locate = client.locate_test_targets().await.unwrap();
-        let mut rx = client
-            .start_upload(&locate.upload_url.unwrap())
-            .await
-            .unwrap();
+        let mut client = ClientBuilder::new("ndt7-client-rust", env!("CARGO_PKG_VERSION")).build();
+        let handle = client.start_upload(None).await.unwrap();
+        println!("connected to {}", handle.server_fqdn);
+        let mut rx = handle.rx;
 
         let mut count = 0;
-        println!("connected to {}", locate.server_fqdn);
         while let Some(m) = rx.recv().await {
             count += 1;
             println!("{:?}", m);

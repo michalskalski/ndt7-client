@@ -3,7 +3,7 @@ use std::io::Write;
 use std::process::exit;
 
 use clap::Parser;
-use ndt7_client::client::{AddressFamily, Client, ClientBuilder};
+use ndt7_client::client::{AddressFamily, ClientBuilder};
 use ndt7_client::emitter::{Emitter, HumanReadableEmitter, JsonEmitter};
 use ndt7_client::error::Ndt7Error;
 use ndt7_client::locate::Target;
@@ -62,7 +62,6 @@ struct Cli {
 }
 
 struct Targets {
-    server_fqdn: String,
     download_url: Option<String>,
     upload_url: Option<String>,
 }
@@ -74,15 +73,14 @@ fn user_agent() -> String {
 /// Parse a --service-url into download or upload target based on its path.
 fn resolve_from_service_url(url: &str) -> Result<Targets, Box<dyn std::error::Error>> {
     let parsed = url::Url::parse(url)?;
-    let fqdn = parsed.host_str().ok_or(Ndt7Error::NoTargets)?.to_string();
+    // Validate URL has a host
+    parsed.host_str().ok_or(Ndt7Error::NoTargets)?;
     match parsed.path() {
         p if p.contains(params::DOWNLOAD_URL_PATH) => Ok(Targets {
-            server_fqdn: fqdn,
             download_url: Some(url.to_string()),
             upload_url: None,
         }),
         p if p.contains(params::UPLOAD_URL_PATH) => Ok(Targets {
-            server_fqdn: fqdn,
             download_url: None,
             upload_url: Some(url.to_string()),
         }),
@@ -98,7 +96,6 @@ fn resolve_from_service_url(url: &str) -> Result<Targets, Box<dyn std::error::Er
 /// Build URLs for a direct connection (no locate API, no tokens).
 fn resolve_direct(server: &str, scheme: &str, no_download: bool, no_upload: bool) -> Targets {
     Targets {
-        server_fqdn: server.to_string(),
         download_url: Some(format!("{scheme}://{server}{}", params::DOWNLOAD_URL_PATH))
             .filter(|_| !no_download),
         upload_url: Some(format!("{scheme}://{server}{}", params::UPLOAD_URL_PATH))
@@ -127,7 +124,6 @@ async fn resolve_interactive(
     };
     let urls = target.service_urls(scheme);
     Ok(Targets {
-        server_fqdn: target.machine.clone(),
         download_url: urls.download.filter(|_| !no_download),
         upload_url: urls.upload.filter(|_| !no_upload),
     })
@@ -152,50 +148,33 @@ async fn resolve_from_locate(
         })?;
     let urls = target.service_urls(scheme);
     Ok(Targets {
-        server_fqdn: target.machine.clone(),
         download_url: urls.download.filter(|_| !no_download),
         upload_url: urls.upload.filter(|_| !no_upload),
     })
 }
 
-/// Call locate API, pick nearest server automatically.
-async fn resolve_nearest(
-    client: &Client,
-    no_download: bool,
-    no_upload: bool,
-) -> Result<Targets, Box<dyn std::error::Error>> {
-    let locate = client.locate_test_targets().await?;
-    Ok(Targets {
-        server_fqdn: locate.server_fqdn,
-        download_url: locate.download_url.filter(|_| !no_download),
-        upload_url: locate.upload_url.filter(|_| !no_upload),
-    })
-}
-
-async fn resolve_targets(
-    cli: &Cli,
-    client: &Client,
-) -> Result<Targets, Box<dyn std::error::Error>> {
+async fn resolve_targets(cli: &Cli) -> Result<Option<Targets>, Box<dyn std::error::Error>> {
     let scheme = if cli.no_tls { "ws" } else { "wss" };
 
-    if let Some(ref url) = cli.service_url {
-        resolve_from_service_url(url)
+    let targets = if let Some(ref url) = cli.service_url {
+        Some(resolve_from_service_url(url)?)
     } else if let Some(ref server) = cli.server {
         if cli.no_locate {
-            Ok(resolve_direct(
+            Some(resolve_direct(
                 server,
                 scheme,
                 cli.no_download,
                 cli.no_upload,
             ))
         } else if server.is_empty() {
-            resolve_interactive(scheme, cli.no_download, cli.no_upload).await
+            Some(resolve_interactive(scheme, cli.no_download, cli.no_upload).await?)
         } else {
-            resolve_from_locate(server, scheme, cli.no_download, cli.no_upload).await
+            Some(resolve_from_locate(server, scheme, cli.no_download, cli.no_upload).await?)
         }
     } else {
-        resolve_nearest(client, cli.no_download, cli.no_upload).await
-    }
+        None
+    };
+    Ok(targets)
 }
 
 fn print_targets(targets: &[Target]) {
@@ -208,6 +187,37 @@ fn print_targets(targets: &[Target]) {
         };
         println!("{:<4} {:<65} {}", pos + 1, target.machine, location);
     }
+}
+
+async fn run_test(
+    mut rx: tokio::sync::mpsc::Receiver<ndt7_client::error::Result<Measurement>>,
+    kind: TestKind,
+    emitter: &mut dyn Emitter,
+    quiet: bool,
+) -> Result<(Option<Measurement>, Option<Measurement>), Box<dyn std::error::Error>> {
+    let mut client_measurement = None;
+    let mut server_measurement = None;
+
+    while let Some(result) = rx.recv().await {
+        match result {
+            Ok(m) => {
+                if !quiet {
+                    match kind {
+                        TestKind::Download => emitter.on_download_event(&m)?,
+                        TestKind::Upload => emitter.on_upload_event(&m)?,
+                    }
+                }
+                match m.origin {
+                    Some(Origin::Client) => client_measurement = Some(m),
+                    Some(Origin::Server) => server_measurement = Some(m),
+                    None => {}
+                }
+            }
+            Err(e) => emitter.on_error(kind, &e.to_string())?,
+        }
+    }
+    emitter.on_complete(kind)?;
+    Ok((client_measurement, server_measurement))
 }
 
 #[tokio::main]
@@ -259,64 +269,69 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         (_, true) => AddressFamily::Ipv6Only,
         _ => AddressFamily::Any,
     };
-    let client = builder.address_family(af).build();
-    let targets = resolve_targets(&cli, &client).await?;
-
-    if targets.download_url.is_none() && targets.upload_url.is_none() {
-        eprintln!("error: nothing to do");
-        std::process::exit(1);
-    }
+    let mut client = builder.address_family(af).build();
+    let targets = resolve_targets(&cli).await?;
 
     let mut dl_client_measurement: Option<Measurement> = None;
     let mut dl_server_measurement: Option<Measurement> = None;
     let mut ul_measurement: Option<Measurement> = None;
+    let mut server_fqdn = String::new();
 
-    if let Some(ref url) = targets.download_url {
-        let t = TestKind::Download;
-        emitter.on_starting(t)?;
-        let mut rx = client.start_download(url).await?;
-        emitter.on_connected(t, &targets.server_fqdn)?;
-        while let Some(result) = rx.recv().await {
-            match result {
-                Ok(m) => {
-                    if !cli.quiet {
-                        emitter.on_download_event(&m)?;
-                    }
-                    match m.origin {
-                        Some(Origin::Client) => dl_client_measurement = Some(m),
-                        Some(Origin::Server) => dl_server_measurement = Some(m),
-                        None => {}
-                    }
-                }
-                Err(e) => emitter.on_error(t, &e.to_string())?,
+    match targets {
+        Some(targets) => {
+            if targets.download_url.is_none() && targets.upload_url.is_none() {
+                eprintln!("error: nothing to do");
+                std::process::exit(1);
+            }
+            if let Some(ref url) = targets.download_url {
+                emitter.on_starting(TestKind::Download)?;
+                let handle = client.start_download(Some(url)).await?;
+                server_fqdn = handle.server_fqdn;
+                emitter.on_connected(TestKind::Download, &server_fqdn)?;
+                let (dl_c, dl_s) =
+                    run_test(handle.rx, TestKind::Download, &mut *emitter, cli.quiet).await?;
+                dl_client_measurement = dl_c;
+                dl_server_measurement = dl_s;
+            }
+            if let Some(ref url) = targets.upload_url {
+                emitter.on_starting(TestKind::Upload)?;
+                let handle = client.start_upload(Some(url)).await?;
+                server_fqdn = handle.server_fqdn;
+                emitter.on_connected(TestKind::Upload, &server_fqdn)?;
+                let (_, ul) =
+                    run_test(handle.rx, TestKind::Upload, &mut *emitter, cli.quiet).await?;
+                ul_measurement = ul;
             }
         }
-        emitter.on_complete(t)?;
-    }
-
-    if let Some(ref url) = targets.upload_url {
-        let t = TestKind::Upload;
-        emitter.on_starting(t)?;
-        let mut rx = client.start_upload(url).await?;
-        emitter.on_connected(t, &targets.server_fqdn)?;
-        while let Some(result) = rx.recv().await {
-            match result {
-                Ok(m) => {
-                    if !cli.quiet {
-                        emitter.on_upload_event(&m)?;
-                    }
-                    if m.origin == Some(Origin::Server) {
-                        ul_measurement = Some(m);
-                    }
-                }
-                Err(e) => emitter.on_error(t, &e.to_string())?,
+        None => {
+            if cli.no_download && cli.no_upload {
+                eprintln!("error: nothing to do");
+                std::process::exit(1);
+            }
+            if !cli.no_download {
+                emitter.on_starting(TestKind::Download)?;
+                let handle = client.start_download(None).await?;
+                server_fqdn = handle.server_fqdn;
+                emitter.on_connected(TestKind::Download, &server_fqdn)?;
+                let (dl_c, dl_s) =
+                    run_test(handle.rx, TestKind::Download, &mut *emitter, cli.quiet).await?;
+                dl_client_measurement = dl_c;
+                dl_server_measurement = dl_s;
+            }
+            if !cli.no_upload {
+                emitter.on_starting(TestKind::Upload)?;
+                let handle = client.start_upload(None).await?;
+                server_fqdn = handle.server_fqdn;
+                emitter.on_connected(TestKind::Upload, &server_fqdn)?;
+                let (_, ul) =
+                    run_test(handle.rx, TestKind::Upload, &mut *emitter, cli.quiet).await?;
+                ul_measurement = ul;
             }
         }
-        emitter.on_complete(t)?;
     }
 
     let summary = Summary::from_measurements(
-        targets.server_fqdn,
+        server_fqdn,
         dl_client_measurement.as_ref(),
         dl_server_measurement.as_ref(),
         ul_measurement.as_ref(),
