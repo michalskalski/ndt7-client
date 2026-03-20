@@ -6,6 +6,7 @@ use crate::spec::Measurement;
 
 /// Results for a single subtest (download or upload).
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct SubtestSummary {
     /// Throughput in megabits per second.
     pub throughput_mbps: f64,
@@ -17,12 +18,16 @@ pub struct SubtestSummary {
 
 /// Aggregated results for an entire speed test session.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "PascalCase")]
 pub struct Summary {
     /// FQDN of the M-Lab server used.
+    #[serde(rename = "ServerFQDN")]
     pub server_fqdn: String,
     /// Client IP address as seen by the server.
+    #[serde(rename = "ClientIP")]
     pub client_ip: String,
     /// Server IP address.
+    #[serde(rename = "ServerIP")]
     pub server_ip: String,
     /// Download subtest results, if a download test was run.
     pub download: Option<SubtestSummary>,

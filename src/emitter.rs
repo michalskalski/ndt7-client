@@ -14,29 +14,27 @@ use crate::spec::{Measurement, Origin, TestKind};
 use crate::summary::Summary;
 
 #[derive(Serialize)]
-#[serde(tag = "type")]
+#[serde(tag = "Type")]
 enum Event<'a> {
-    Starting {
-        test: TestKind,
-    },
-    Error {
-        test: TestKind,
-        error: &'a str,
-    },
+    #[serde(rename_all = "PascalCase")]
+    Starting { test: TestKind },
+    #[serde(rename_all = "PascalCase")]
+    Error { test: TestKind, error: &'a str },
+    #[serde(rename_all = "PascalCase")]
     Connected {
         test: TestKind,
+        #[serde(rename = "FQDN")]
         fqdn: &'a str,
     },
+    #[serde(rename_all = "PascalCase")]
     Measurement {
         test: TestKind,
         measurement: &'a Measurement,
     },
-    Complete {
-        test: TestKind,
-    },
-    Summary {
-        summary: &'a Summary,
-    },
+    #[serde(rename_all = "PascalCase")]
+    Complete { test: TestKind },
+    #[serde(rename_all = "PascalCase")]
+    Summary { summary: &'a Summary },
 }
 
 /// Callbacks for ndt7 test lifecycle events.
@@ -244,7 +242,7 @@ mod tests {
 
         let res = serde_json::from_str::<serde_json::Value>(&out).unwrap();
 
-        assert_eq!(res["test"], "upload");
-        assert_eq!(res["type"], "Starting");
+        assert_eq!(res["Test"], "upload");
+        assert_eq!(res["Type"], "Starting");
     }
 }
