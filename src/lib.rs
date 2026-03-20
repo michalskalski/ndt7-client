@@ -12,16 +12,14 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let client = ClientBuilder::new("my-app", "0.1.0").build();
-//! let targets = client.locate_test_targets().await?;
-//!
-//! if let Some(url) = &targets.download_url {
-//!     let mut rx = client.start_download(url).await?;
-//!     while let Some(result) = rx.recv().await {
-//!         match result {
-//!             Ok(m) => println!("{:?}", m),
-//!             Err(e) => eprintln!("error: {e}"),
-//!         }
+//! let mut client = ClientBuilder::new("my-app", "0.1.0").build();
+//! let handle = client.start_download(None).await?;
+//! println!("connected to {}", handle.server_fqdn);
+//! let mut rx = handle.rx;
+//! while let Some(result) = rx.recv().await {
+//!     match result {
+//!         Ok(m) => println!("{:?}", m),
+//!         Err(e) => eprintln!("error: {e}"),
 //!     }
 //! }
 //! # Ok(())

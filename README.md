@@ -15,38 +15,34 @@ use ndt7_client::spec::Origin;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = ClientBuilder::new("my-app", "0.1.0").build();
+    let mut client = ClientBuilder::new("my-app", "0.1.0").build();
 
-    // Locate the nearest M-Lab server
-    let targets = client.locate_test_targets().await?;
-
-    // Run download test
-    if let Some(url) = &targets.download_url {
-        let mut rx = client.start_download(url).await?;
-        while let Some(result) = rx.recv().await {
-            let m = result?;
-            if m.origin == Some(Origin::Client) {
-                if let Some(app) = &m.app_info {
-                    let mbps = 8.0 * app.num_bytes as f64 / app.elapsed_time as f64;
-                    println!("Download: {mbps:.1} Mbit/s");
-                }
+    // Run download test (auto-locates nearest M-Lab server with retry)
+    let handle = client.start_download(None).await?;
+    println!("Connected to {}", handle.server_fqdn);
+    let mut rx = handle.rx;
+    while let Some(result) = rx.recv().await {
+        let m = result?;
+        if m.origin == Some(Origin::Client) {
+            if let Some(app) = &m.app_info {
+                let mbps = 8.0 * app.num_bytes as f64 / app.elapsed_time as f64;
+                println!("Download: {mbps:.1} Mbit/s");
             }
         }
     }
 
-    // Run upload test
-    if let Some(url) = &targets.upload_url {
-        let mut rx = client.start_upload(url).await?;
-        while let Some(result) = rx.recv().await {
-            let m = result?;
-            if m.origin == Some(Origin::Server) {
-                if let Some(tcp) = &m.tcp_info {
-                    if let (Some(received), Some(elapsed)) =
-                        (tcp.bytes_received, tcp.elapsed_time)
-                    {
-                        let mbps = 8.0 * received as f64 / elapsed as f64;
-                        println!("Upload: {mbps:.1} Mbit/s");
-                    }
+    // Run upload test (reuses cached server list)
+    let handle = client.start_upload(None).await?;
+    let mut rx = handle.rx;
+    while let Some(result) = rx.recv().await {
+        let m = result?;
+        if m.origin == Some(Origin::Server) {
+            if let Some(tcp) = &m.tcp_info {
+                if let (Some(received), Some(elapsed)) =
+                    (tcp.bytes_received, tcp.elapsed_time)
+                {
+                    let mbps = 8.0 * received as f64 / elapsed as f64;
+                    println!("Upload: {mbps:.1} Mbit/s");
                 }
             }
         }
