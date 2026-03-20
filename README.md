@@ -94,20 +94,19 @@ Test results
 Options:
 
 ```
---list-servers              List available M-Lab servers and exit
---server                    Interactive server picker (via locate API)
---server <hostname>         Select a specific server (via locate API)
---server <host:port> --no-locate
-                            Connect directly, bypassing locate API
---service-url <url>         Full service URL with access token
---format human|json         Output format (default: human)
---no-download               Skip download test
---no-upload                 Skip upload test
---quiet                     Show summary only
---ipv4                      Force IPv4 connections
---ipv6                      Force IPv6 connections
---no-verify                 Skip TLS certificate verification
---no-tls                    Use unencrypted WebSocket
+--server [<SERVER>]          Server hostname. With --no-locate: connect directly (e.g. localhost:8080). Without --no-locate: select this server via locate API (gets access tokens). With no value: interactive server picker
+--service-url <SERVICE_URL>  Full service URL with path and access token. For advanced use / scripting
+--no-locate                  Skip locate API, connect directly to the server specified by --server
+--no-tls                     Use unencrypted WebSocket (ws://) instead of TLS (wss://)
+--format <FORMAT>            Output format to use: 'human' or 'json' for batch processing [default: human] [possible values: human, json]
+--no-download                Skip download measurement
+--no-upload                  Skip upload measurement
+--quiet                      Emit summary and errors only
+--no-verify                  Skip tls certificate verification
+--list-servers               List available target servers and exit
+--ipv4                       Force IPv4 connections
+--ipv6                       Force IPv6 connections
+--help                       Print help
 ```
 
 ## References
