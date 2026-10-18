@@ -323,8 +323,8 @@ impl Client {
     fn user_agent(&self) -> String {
         format!(
             "{}/{} {}-rs/{}",
-            &self.client_name,
-            &self.client_version,
+            self.client_name,
+            self.client_version,
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION")
         )

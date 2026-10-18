@@ -96,10 +96,9 @@ fn resolve_from_service_url(url: &str) -> Result<Targets, Box<dyn std::error::Er
 /// Build URLs for a direct connection (no locate API, no tokens).
 fn resolve_direct(server: &str, scheme: &str, no_download: bool, no_upload: bool) -> Targets {
     Targets {
-        download_url: Some(format!("{scheme}://{server}{}", params::DOWNLOAD_URL_PATH))
-            .filter(|_| !no_download),
-        upload_url: Some(format!("{scheme}://{server}{}", params::UPLOAD_URL_PATH))
-            .filter(|_| !no_upload),
+        download_url: (!no_download)
+            .then(|| format!("{scheme}://{server}{}", params::DOWNLOAD_URL_PATH)),
+        upload_url: (!no_upload).then(|| format!("{scheme}://{server}{}", params::UPLOAD_URL_PATH)),
     }
 }
 
